@@ -6,12 +6,14 @@ import {
   createOpsTask,
   deleteOpsRunbook,
   decideOpsTask,
+  getOpsPolicies,
   getOpsOverview,
   instantiateOpsRunbook,
   listOpsAudit,
   listOpsRunbooks,
   listOpsTasks,
-  runOpsTask
+  runOpsTask,
+  updateOpsPolicies
 } from '../services/ops-control.js';
 import { broadcast } from '../services/ws-manager.js';
 
@@ -49,6 +51,14 @@ router.get('/runbooks', async (req, res) => {
   }
 });
 
+router.get('/policies', async (req, res) => {
+  try {
+    res.json(await getOpsPolicies());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.post('/tasks', async (req, res) => {
   const { title, summary, command, targetAgent, requestedBy, requiresApproval, metadata } = req.body;
   if (!title?.trim()) return res.status(400).json({ error: 'title required' });
@@ -67,7 +77,7 @@ router.post('/tasks', async (req, res) => {
     emitOpsUpdate('task.created', { taskId: task.id });
     res.status(201).json(task);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(400).json({ error: error.message });
   }
 });
 
@@ -108,6 +118,16 @@ router.delete('/runbooks/:id', async (req, res) => {
     const runbook = await deleteOpsRunbook(req.params.id, req.query.deletedBy || req.body?.deletedBy || 'operator');
     emitOpsUpdate('runbook.deleted', { runbookId: runbook.id });
     res.json(runbook);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+router.put('/policies', async (req, res) => {
+  try {
+    const policies = await updateOpsPolicies(req.body || {}, req.body?.updatedBy || 'operator');
+    emitOpsUpdate('policy.updated', { profile: policies.profile });
+    res.json(policies);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

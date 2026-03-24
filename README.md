@@ -2,7 +2,7 @@
 
 **Advanced local agent operations control plane**
 
-Executionor is a local-first operator dashboard for running, monitoring, approving, and auditing agent workflows from one interface. It combines live shell execution, filesystem access, database tools, OpenClaw integration, real-time telemetry, and an Ops workspace with reusable runbooks.
+Executionor is a local-first operator dashboard for running, monitoring, approving, and auditing agent workflows from one interface. It combines live shell execution, filesystem access, database tools, OpenClaw integration, real-time telemetry, and an Ops workspace with reusable runbooks plus persistent governance policies.
 
 ## What it does
 
@@ -12,6 +12,7 @@ Executionor is a local-first operator dashboard for running, monitoring, approvi
 - Dispatches work through local agent roles
 - Tracks Ops tasks with approvals, audit history, diagnostics, and reruns
 - Saves reusable runbooks so common workflows can be queued without rewriting prompts
+- Applies persistent governance policies for approval rules, blocked action types, and runbook controls
 - Streams updates over WebSocket so multiple views stay in sync
 
 ## Quick start
@@ -63,6 +64,7 @@ It supports:
 - audit trails for creation, approval, rejection, execution, and failures
 - diagnostics for runtime, docs parity, MCP installs, OpenClaw reachability, and git state
 - reusable runbooks that can be loaded into the form or queued directly as new tasks
+- persistent governance policies that control which task types are blocked and which always require human approval
 
 Built-in runbooks include workspace inventory, host runtime snapshot, OpenClaw status, and database schema snapshot.
 
@@ -132,6 +134,8 @@ Built-in runbooks include workspace inventory, host runtime snapshot, OpenClaw s
 - `POST /api/ops/runbooks`
 - `POST /api/ops/runbooks/:id/instantiate`
 - `DELETE /api/ops/runbooks/:id`
+- `GET /api/ops/policies`
+- `PUT /api/ops/policies`
 - `GET /api/ops/audit`
 - `GET /api/ops/diagnostics`
 
@@ -141,6 +145,7 @@ Built-in runbooks include workspace inventory, host runtime snapshot, OpenClaw s
 - Some legacy UI copy still reflects the original Windows-first design.
 - Ops filesystem actions are constrained to the workspace root for safety.
 - Approval-gated tasks require fresh approval before rerun.
+- Ops policies are persisted locally and can override operator form choices when governance rules require approval.
 
 ## Repository goal
 

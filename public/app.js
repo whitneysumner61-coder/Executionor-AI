@@ -36,6 +36,7 @@ const state = {
   logFile: '',
   logStream: null,
   opsRunbooks: [],
+  opsPolicies: {},
   savedSessions: [],
   paletteMode: 'commands',
   paletteItems: [],
@@ -321,6 +322,7 @@ async function api(method, path, body) {
 
 const GET = (path) => api('GET', path);
 const POST = (path, body) => api('POST', path, body);
+const PUT = (path, body) => api('PUT', path, body);
 const DEL = (path) => api('DELETE', path);
 
 function sv(view, button) {
@@ -1068,23 +1070,27 @@ function startLogStream() {
 async function loadOpsDashboard() {
   const tasksRoot = document.getElementById('ops-tasks');
   const runbooksRoot = document.getElementById('ops-runbooks');
+  const policiesRoot = document.getElementById('ops-policies');
   const diagRoot = document.getElementById('ops-diag');
   const auditRoot = document.getElementById('ops-audit');
   const statsRoot = document.getElementById('ops-stats');
-  if (!tasksRoot || !runbooksRoot || !diagRoot || !auditRoot || !statsRoot) return;
+  if (!tasksRoot || !runbooksRoot || !policiesRoot || !diagRoot || !auditRoot || !statsRoot) return;
 
   try {
     const filter = document.getElementById('ops-filter')?.value || '';
-    const [overview, taskData, runbookData] = await Promise.all([
+    const [overview, taskData, runbookData, policyData] = await Promise.all([
       GET('/ops/overview'),
       GET(`/ops/tasks${filter ? `?status=${encodeURIComponent(filter)}` : ''}`),
-      GET('/ops/runbooks')
+      GET('/ops/runbooks'),
+      GET('/ops/policies')
     ]);
 
     state.opsRunbooks = runbookData.runbooks || overview.runbooks || [];
+    state.opsPolicies = policyData || overview.policies || {};
     renderOpsStats(overview.counts, overview.diagnosticsSummary);
     renderOpsTasks(taskData.tasks || []);
     renderOpsRunbooks(state.opsRunbooks);
+    renderOpsPolicies(state.opsPolicies);
     renderOpsDiagnostics(overview.diagnostics || []);
     renderOpsAudit(overview.audit || []);
     document.getElementById('ops-sync').textContent = `updated ${new Date().toLocaleTimeString()}`;
@@ -1092,6 +1098,7 @@ async function loadOpsDashboard() {
     statsRoot.innerHTML = '';
     tasksRoot.innerHTML = `<div class="ops-empty" style="color:var(--red)">${esc(error.message)}</div>`;
     runbooksRoot.innerHTML = '';
+    policiesRoot.innerHTML = '';
     diagRoot.innerHTML = '';
     auditRoot.innerHTML = '';
   }
@@ -1101,6 +1108,7 @@ function renderOpsStats(counts = {}, diagnosticsSummary = {}) {
   const stats = [
     ['Total', counts.total || 0],
     ['Runbooks', counts.runbooks || state.opsRunbooks.length || 0],
+    ['Policy gates', (state.opsPolicies.requireApprovalForTypes || []).length || 0],
     ['Pending', counts.pending_approval || 0],
     ['Approved', counts.approved || 0],
     ['Running', counts.running || 0],
@@ -1192,6 +1200,44 @@ function renderOpsRunbooks(runbooks = []) {
       </div>
     </div>
   `).join('');
+}
+
+function renderOpsPolicies(policies = {}) {
+  const root = document.getElementById('ops-policies');
+  if (!root) return;
+
+  root.innerHTML = `
+    <div class="ops-form-row">
+      <label for="ops-pol-profile">Profile</label>
+      <input class="ops-inp" id="ops-pol-profile" value="${escAttr(policies.profile || 'balanced')}" placeholder="balanced">
+    </div>
+    <label class="ops-check"><input type="checkbox" id="ops-pol-custom-runbooks" ${policies.allowCustomRunbooks !== false ? 'checked' : ''}> Allow custom runbooks</label>
+    <label class="ops-check"><input type="checkbox" id="ops-pol-delete-runbooks" ${policies.allowRunbookDeletion !== false ? 'checked' : ''}> Allow custom runbook deletion</label>
+    <div class="ops-form-row">
+      <label for="ops-pol-approval-types">Always require approval for task types</label>
+      <input class="ops-inp" id="ops-pol-approval-types" value="${escAttr((policies.requireApprovalForTypes || []).join(', '))}" placeholder="ps, sql, code">
+    </div>
+    <div class="ops-form-row">
+      <label for="ops-pol-blocked-types">Blocked task types</label>
+      <input class="ops-inp" id="ops-pol-blocked-types" value="${escAttr((policies.blockedTaskTypes || []).join(', '))}" placeholder="fs, claw">
+    </div>
+    <div class="ops-form-row">
+      <label for="ops-pol-blocked-fs">Blocked filesystem operations</label>
+      <input class="ops-inp" id="ops-pol-blocked-fs" value="${escAttr((policies.blockedFsOperations || []).join(', '))}" placeholder="delete">
+    </div>
+    <div class="ops-form-row">
+      <label for="ops-pol-blocked-claw">Blocked OpenClaw actions</label>
+      <input class="ops-inp" id="ops-pol-blocked-claw" value="${escAttr((policies.blockedClawActions || []).join(', '))}" placeholder="send_message">
+    </div>
+    <div class="ops-form-row">
+      <label for="ops-pol-notes">Policy notes</label>
+      <textarea class="ops-ta" id="ops-pol-notes" placeholder="Explain why these governance rules exist.">${escText(policies.notes || '')}</textarea>
+    </div>
+    <div class="ops-form-actions">
+      <button class="btn primary" onclick="saveOpsPolicies()">Save Policies</button>
+      <button class="btn" onclick="loadOpsDashboard()">Reload Policies</button>
+    </div>
+  `;
 }
 
 function renderOpsDiagnostics(checks = []) {
@@ -1373,8 +1419,39 @@ async function deleteOpsRunbookAction(runbookId) {
   }
 }
 
+async function saveOpsPolicies() {
+  const updatedBy = document.getElementById('ops-requested-by').value.trim() || 'operator';
+
+  try {
+    const policies = await PUT('/ops/policies', {
+      updatedBy,
+      profile: document.getElementById('ops-pol-profile').value.trim() || 'balanced',
+      allowCustomRunbooks: document.getElementById('ops-pol-custom-runbooks').checked,
+      allowRunbookDeletion: document.getElementById('ops-pol-delete-runbooks').checked,
+      requireApprovalForTypes: document.getElementById('ops-pol-approval-types').value.trim(),
+      blockedTaskTypes: document.getElementById('ops-pol-blocked-types').value.trim(),
+      blockedFsOperations: document.getElementById('ops-pol-blocked-fs').value.trim(),
+      blockedClawActions: document.getElementById('ops-pol-blocked-claw').value.trim(),
+      notes: document.getElementById('ops-pol-notes').value.trim()
+    });
+    state.opsPolicies = policies;
+    toast('Policies saved', 'ok');
+    await loadOpsDashboard();
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
 function opsBadge(label, tone) {
   return `<span class="ops-badge ${tone}">${esc(label)}</span>`;
+}
+
+function escAttr(value) {
+  return esc(String(value ?? '')).replace(/"/g, '&quot;');
+}
+
+function escText(value) {
+  return esc(String(value ?? ''));
 }
 
 function taskStatusTone(status) {

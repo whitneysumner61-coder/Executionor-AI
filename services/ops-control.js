@@ -94,7 +94,21 @@ function createDefaultState() {
     tasks: [],
     audit: [],
     runbooks: createBuiltinRunbooks(),
+    policies: createDefaultPolicies(),
     updatedAt: null
+  };
+}
+
+function createDefaultPolicies() {
+  return {
+    profile: 'balanced',
+    allowCustomRunbooks: true,
+    allowRunbookDeletion: true,
+    requireApprovalForTypes: ['ps', 'sql', 'code'],
+    blockedTaskTypes: [],
+    blockedFsOperations: [],
+    blockedClawActions: [],
+    notes: 'Require review for shell, SQL, and code tasks. Use blocked lists only for actions you never want queued from the dashboard.'
   };
 }
 
@@ -134,6 +148,39 @@ function mergeRunbooks(savedRunbooks = []) {
   return sortRunbooks([...byId.values()]);
 }
 
+function normalizeStringList(values, allowed = null) {
+  const raw = Array.isArray(values) ? values : String(values || '').split(',');
+  const normalized = [...new Set(raw
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter(Boolean))];
+  return allowed ? normalized.filter((value) => allowed.includes(value)) : normalized;
+}
+
+function mergePolicies(savedPolicies = {}) {
+  const defaults = createDefaultPolicies();
+  const taskTypes = ['ps', 'fs', 'sql', 'claw', 'code'];
+  const fsOperations = ['list', 'read', 'find', 'mkdir', 'write', 'rename', 'delete'];
+  const clawActions = ['status', 'list_channels', 'list_agents', 'send_message'];
+  const hasApprovalOverride = Object.prototype.hasOwnProperty.call(savedPolicies, 'requireApprovalForTypes');
+
+  return {
+    profile: String(savedPolicies.profile || defaults.profile),
+    allowCustomRunbooks: typeof savedPolicies.allowCustomRunbooks === 'boolean'
+      ? savedPolicies.allowCustomRunbooks
+      : defaults.allowCustomRunbooks,
+    allowRunbookDeletion: typeof savedPolicies.allowRunbookDeletion === 'boolean'
+      ? savedPolicies.allowRunbookDeletion
+      : defaults.allowRunbookDeletion,
+    requireApprovalForTypes: hasApprovalOverride
+      ? normalizeStringList(savedPolicies.requireApprovalForTypes, taskTypes)
+      : defaults.requireApprovalForTypes,
+    blockedTaskTypes: normalizeStringList(savedPolicies.blockedTaskTypes, taskTypes),
+    blockedFsOperations: normalizeStringList(savedPolicies.blockedFsOperations, fsOperations),
+    blockedClawActions: normalizeStringList(savedPolicies.blockedClawActions, clawActions),
+    notes: String(savedPolicies.notes || defaults.notes).trim().slice(0, 500) || defaults.notes
+  };
+}
+
 function normalizeTaskStatus(status) {
   return ['draft', 'pending_approval', 'approved', 'rejected', 'running', 'completed', 'failed'].includes(status)
     ? status
@@ -158,6 +205,7 @@ async function readState() {
       tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
       audit: Array.isArray(parsed.audit) ? parsed.audit : [],
       runbooks: mergeRunbooks(parsed.runbooks),
+      policies: mergePolicies(parsed.policies),
       updatedAt: parsed.updatedAt || null
     };
   } catch (_) {
@@ -229,6 +277,28 @@ function classifyRisk(parsed) {
 
 function defaultApprovalRequired(parsed) {
   return classifyRisk(parsed) !== 'low';
+}
+
+function evaluatePolicies(parsed, policies) {
+  if (!parsed) {
+    return { requiresApproval: false };
+  }
+
+  if (policies.blockedTaskTypes.includes(parsed.type)) {
+    throw new Error(`Policy blocks ${parsed.type.toUpperCase()} tasks from being queued or run.`);
+  }
+
+  if (parsed.type === 'fs' && policies.blockedFsOperations.includes(parsed.operation)) {
+    throw new Error(`Policy blocks filesystem operation: ${parsed.operation}.`);
+  }
+
+  if (parsed.type === 'claw' && policies.blockedClawActions.includes(parsed.action)) {
+    throw new Error(`Policy blocks OpenClaw action: ${parsed.action}.`);
+  }
+
+  return {
+    requiresApproval: defaultApprovalRequired(parsed) || policies.requireApprovalForTypes.includes(parsed.type)
+  };
 }
 
 function sortTasks(tasks) {
@@ -472,6 +542,11 @@ export async function listOpsRunbooks() {
   return sortRunbooks(state.runbooks || []);
 }
 
+export async function getOpsPolicies() {
+  const state = await readState();
+  return mergePolicies(state.policies);
+}
+
 export async function listOpsTasks(status) {
   const state = await readState();
   const tasks = sortTasks(state.tasks);
@@ -487,9 +562,11 @@ export async function createOpsTask(input) {
   const command = String(input.command || '').trim();
   const targetAgent = input.targetAgent || 'AUTO';
   const parsed = await parseTaskInput(targetAgent, command);
+  const policies = await getOpsPolicies();
+  const policyDecision = evaluatePolicies(parsed, policies);
   const risk = classifyRisk(parsed);
   const executable = isExecutableTask({ parsed });
-  const requiresApproval = executable ? (input.requiresApproval ?? defaultApprovalRequired(parsed)) : false;
+  const requiresApproval = executable ? (input.requiresApproval === true || policyDecision.requiresApproval) : false;
   const createdAt = now();
 
   const task = {
@@ -542,9 +619,13 @@ export async function createOpsRunbook(input) {
   const command = String(input.command || '').trim();
   if (!command) throw new Error('Runbook command is required');
 
+  const policies = await getOpsPolicies();
+  if (!policies.allowCustomRunbooks) throw new Error('Policy currently disables custom runbook creation.');
+
   const targetAgent = input.targetAgent || 'AUTO';
   const parsed = await parseTaskInput(targetAgent, command);
   if (!parsed) throw new Error('Runbook command must resolve to an executable action');
+  const policyDecision = evaluatePolicies(parsed, policies);
 
   const createdAt = now();
   const runbook = {
@@ -553,7 +634,7 @@ export async function createOpsRunbook(input) {
     summary: String(input.summary || summarizeAction(parsed)).trim(),
     command,
     targetAgent,
-    requiresApproval: input.requiresApproval ?? defaultApprovalRequired(parsed),
+    requiresApproval: input.requiresApproval === true || policyDecision.requiresApproval,
     tags: normalizeTags(input.tags),
     builtin: false,
     createdBy: String(input.createdBy || 'operator'),
@@ -581,9 +662,11 @@ export async function deleteOpsRunbook(runbookId, deletedBy = 'operator') {
   let deletedRunbook = null;
 
   await mutateState((state) => {
+    const policies = mergePolicies(state.policies);
     const runbook = state.runbooks.find((entry) => entry.id === runbookId);
     if (!runbook) throw new Error('Runbook not found');
     if (runbook.builtin) throw new Error('Built-in runbooks cannot be deleted');
+    if (!policies.allowRunbookDeletion) throw new Error('Policy currently disables custom runbook deletion.');
 
     state.runbooks = state.runbooks.filter((entry) => entry.id !== runbookId);
     deletedRunbook = structuredClone(runbook);
@@ -632,6 +715,29 @@ export async function instantiateOpsRunbook(runbookId, input = {}) {
   return task;
 }
 
+export async function updateOpsPolicies(input = {}, updatedBy = 'operator') {
+  let nextPolicies = null;
+
+  await mutateState((state) => {
+    state.policies = mergePolicies({
+      ...(state.policies || {}),
+      ...(input && typeof input === 'object' ? input : {})
+    });
+    nextPolicies = structuredClone(state.policies);
+    addAuditEvent(state, 'policy.updated', {
+      updatedBy,
+      profile: state.policies.profile,
+      requireApprovalForTypes: state.policies.requireApprovalForTypes,
+      blockedTaskTypes: state.policies.blockedTaskTypes,
+      blockedFsOperations: state.policies.blockedFsOperations,
+      blockedClawActions: state.policies.blockedClawActions
+    });
+    return state;
+  });
+
+  return nextPolicies;
+}
+
 export async function decideOpsTask(taskId, decision, reviewer, note = '') {
   const targetDecision = decision === 'approve' ? 'approved' : 'rejected';
   let updatedTask = null;
@@ -666,11 +772,16 @@ export async function runOpsTask(taskId, requestedBy = 'operator') {
   let taskSnapshot = null;
 
   await mutateState((state) => {
+    const policies = mergePolicies(state.policies);
     const task = state.tasks.find((entry) => entry.id === taskId);
     if (!task) throw new Error('Task not found');
     if (!task.executable) throw new Error('This task is planning-only and cannot be run');
+    const policyDecision = evaluatePolicies(task.parsed, policies);
+    if (policyDecision.requiresApproval) task.requiresApproval = true;
     if (task.requiresApproval && task.status !== 'approved') {
-      throw new Error('Task must be approved before it can run');
+      task.status = 'pending_approval';
+      task.updatedAt = now();
+      throw Object.assign(new Error('Task must be approved before it can run'), { task: structuredClone(task) });
     }
     task.status = 'running';
     task.updatedAt = now();
@@ -817,9 +928,16 @@ export async function collectOpsDiagnostics() {
   });
 
   checks.push({
+    id: 'policies',
+    label: 'Ops governance policies',
+    status: state.policies?.requireApprovalForTypes?.length ? 'ok' : 'warn',
+    detail: `Approval required for: ${(state.policies?.requireApprovalForTypes || []).join(', ') || 'nothing'}; blocked task types: ${(state.policies?.blockedTaskTypes || []).join(', ') || 'none'}.`
+  });
+
+  checks.push({
     id: 'docs',
     label: 'README parity',
-    status: readme.includes('/api/ops/runbooks') && readme.includes('/api/logs') && readme.includes('/api/monitor') ? 'ok' : 'warn',
+    status: readme.includes('/api/ops/runbooks') && readme.includes('/api/ops/policies') && readme.includes('/api/logs') && readme.includes('/api/monitor') ? 'ok' : 'warn',
     detail: 'README coverage should reflect the current routes, runbooks, and control-plane features.'
   });
 
@@ -848,12 +966,14 @@ export async function getOpsOverview() {
   const state = await readState();
   const tasks = sortTasks(state.tasks);
   const runbooks = sortRunbooks(state.runbooks || []);
+  const policies = mergePolicies(state.policies);
   const diagnostics = await collectOpsDiagnostics();
   const counts = taskCounts(tasks);
   return {
     counts: { ...counts, runbooks: runbooks.length },
     tasks: tasks.slice(0, 25),
     runbooks: runbooks.slice(0, 25),
+    policies,
     audit: state.audit.slice(0, 25),
     diagnostics,
     diagnosticsSummary: diagnostics.reduce((acc, check) => {
