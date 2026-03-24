@@ -40,6 +40,8 @@ const state = {
   opsStackPreview: {},
   opsPolicies: {},
   openclawOverview: null,
+  guidedActions: [],
+  buildProfiles: [],
   lastOpsTasks: [],
   opsTaskReview: null,
   opsTaskAudit: [],
@@ -1086,20 +1088,26 @@ async function loadOpsDashboard() {
 
   try {
     const filter = document.getElementById('ops-filter')?.value || '';
-    const [overview, taskData, runbookData, policyData, stackData, openclawData] = await Promise.all([
+    const [overview, taskData, runbookData, policyData, stackData, openclawData, guidedData, buildData] = await Promise.all([
       GET('/ops/overview'),
       GET(`/ops/tasks${filter ? `?status=${encodeURIComponent(filter)}` : ''}`),
       GET('/ops/runbooks'),
       GET('/ops/policies'),
       GET('/compose/stacks'),
-      GET('/openclaw/overview')
+      GET('/openclaw/overview'),
+      GET('/ops/guided-actions'),
+      GET('/ops/build-station')
     ]);
 
     state.opsRunbooks = runbookData.runbooks || overview.runbooks || [];
     state.opsStacks = stackData.stacks || overview.stacks || [];
     state.opsPolicies = policyData || overview.policies || {};
     state.openclawOverview = openclawData || null;
+    state.guidedActions = guidedData.actions || [];
+    state.buildProfiles = buildData.profiles || [];
     state.lastOpsTasks = taskData.tasks || [];
+    renderGuidedActionControls(state.guidedActions);
+    renderBuildStationControls(state.buildProfiles);
     renderOpsStats(overview.counts, overview.diagnosticsSummary);
     renderOpsTasks(taskData.tasks || []);
     renderOpenClawOverview(state.openclawOverview);
@@ -1185,6 +1193,22 @@ function renderOpenClawOverview(overview) {
       ${overview.lastMessageResult ? `<div class="ops-task-code">${esc(overview.lastMessageResult)}</div>` : ''}
     </div>
   `;
+}
+
+function renderGuidedActionControls(actions = []) {
+  const select = document.getElementById('ops-guided-action');
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = actions.map((action) => `<option value="${escAttr(action.id)}">${esc(action.label)}</option>`).join('');
+  if (current && actions.some((action) => action.id === current)) select.value = current;
+}
+
+function renderBuildStationControls(profiles = []) {
+  const select = document.getElementById('ops-build-profile');
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = profiles.map((profile) => `<option value="${escAttr(profile.id)}">${esc(profile.label)}</option>`).join('');
+  if (current && profiles.some((profile) => profile.id === current)) select.value = current;
 }
 
 function renderOpsStats(counts = {}, diagnosticsSummary = {}) {
@@ -1429,6 +1453,69 @@ async function createOpsTaskFromForm() {
     document.getElementById('ops-approval').checked = true;
     toast('Ops task created', 'ok');
     await loadOpsDashboard();
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
+async function runGuidedActionFromForm() {
+  const actionId = document.getElementById('ops-guided-action').value;
+  const requestedBy = document.getElementById('ops-requested-by').value.trim() || 'operator';
+  const goal = document.getElementById('ops-guided-goal').value.trim();
+  const filename = document.getElementById('ops-guided-file').value.trim();
+  const path = document.getElementById('ops-guided-path').value.trim();
+  const runNow = document.getElementById('ops-guided-run-now').checked;
+
+  if (!actionId) {
+    toast('Pick a guided action', 'info');
+    return;
+  }
+
+  try {
+    const payload = {
+      requestedBy,
+      runNow,
+      command: goal,
+      goal,
+      filename,
+      path
+    };
+    const result = await POST(`/ops/guided-actions/${encodeURIComponent(actionId)}/run`, payload);
+    toast(result.executed ? 'Guided action ran' : 'Guided action queued', 'ok');
+    document.getElementById('ops-guided-goal').value = '';
+    document.getElementById('ops-guided-file').value = '';
+    document.getElementById('ops-guided-path').value = '';
+    await loadOpsDashboard();
+    if (result.task?.id) await openOpsTaskReview(result.task.id);
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
+async function runBuildStationProfileFromForm() {
+  const profileId = document.getElementById('ops-build-profile').value;
+  const name = document.getElementById('ops-build-name').value.trim();
+  const summary = document.getElementById('ops-build-summary').value.trim();
+  const requestedBy = document.getElementById('ops-requested-by').value.trim() || 'operator';
+  const runNow = document.getElementById('ops-build-run-now').checked;
+
+  if (!profileId || !name) {
+    toast('Build profile and artifact name are required', 'info');
+    return;
+  }
+
+  try {
+    const result = await POST(`/ops/build-station/${encodeURIComponent(profileId)}/run`, {
+      name,
+      summary,
+      requestedBy,
+      runNow
+    });
+    toast(result.executed ? 'Build station task ran' : 'Build station task queued', 'ok');
+    document.getElementById('ops-build-name').value = '';
+    document.getElementById('ops-build-summary').value = '';
+    await loadOpsDashboard();
+    if (result.task?.id) await openOpsTaskReview(result.task.id);
   } catch (error) {
     toast(error.message, 'err');
   }

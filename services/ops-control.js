@@ -3,8 +3,9 @@ import { basename, dirname, extname, isAbsolute, join, normalize, relative, reso
 import { fileURLToPath } from 'url';
 
 import { getComposeRuntime, listComposeStacks, runComposeAction } from './compose-stacks.js';
+import { SHELL_LABEL } from './host-runtime.js';
 import { dispatchLocalAgent, WORKSPACE_ROOT } from './local-agent.js';
-import { runPSSync } from '../routes/ps.js';
+import { runPSAutoRepair, runPSSync } from '../routes/ps.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATE_DIR = join(__dirname, '..', 'sessions');
@@ -12,12 +13,87 @@ const STATE_PATH = join(STATE_DIR, 'ops-control.json');
 const WORKSPACE_ROOT_ABS = normalize(resolve(WORKSPACE_ROOT));
 let stateMutationQueue = Promise.resolve();
 
+const GUIDED_ACTIONS = [
+  {
+    id: 'write-code',
+    label: 'Write code',
+    summary: 'Generate a starter code file from a simple goal.',
+    kind: 'code',
+    defaults: { targetAgent: 'SCRIBE', runNow: true }
+  },
+  {
+    id: 'generate-code',
+    label: 'Generate code',
+    summary: 'Queue a code-generation task without immediately running it.',
+    kind: 'code',
+    defaults: { targetAgent: 'SCRIBE', runNow: false }
+  },
+  {
+    id: 'execute-code',
+    label: 'Execute code',
+    summary: 'Run a real command through the host shell.',
+    kind: 'shell',
+    defaults: { targetAgent: 'SHELL', runNow: true, autoRepair: false }
+  },
+  {
+    id: 'fix-and-run',
+    label: 'Fix and run',
+    summary: 'Run a shell command with one bounded automatic repair attempt.',
+    kind: 'shell',
+    defaults: { targetAgent: 'SHELL', runNow: true, autoRepair: true }
+  },
+  {
+    id: 'audit-code',
+    label: 'Audit code',
+    summary: 'Run a lightweight code audit command without hiding the real output.',
+    kind: 'audit',
+    defaults: { targetAgent: 'SHELL', runNow: true, autoRepair: false }
+  }
+];
+
+const BUILD_STATION_PROFILES = [
+  {
+    id: 'copilot-skill',
+    label: 'Copilot skill',
+    summary: 'Scaffold a repository-local Copilot skill.',
+    targetAgent: 'SHELL',
+    command: ({ name }) => `npm run skill:new -- ${slugifyName(name)}`,
+    autoRepair: true
+  },
+  {
+    id: 'powershell-tool',
+    label: 'PowerShell tool',
+    summary: 'Generate a PowerShell starter script for automation work.',
+    targetAgent: 'SCRIBE',
+    command: ({ name, summary }) => `create ${slugifyName(name)}.ps1 ${summary || `PowerShell tool for ${name}`}`
+  },
+  {
+    id: 'node-worker',
+    label: 'Node worker',
+    summary: 'Generate a local Node worker or utility script.',
+    targetAgent: 'SCRIBE',
+    command: ({ name, summary }) => `create ${slugifyName(name)}.mjs ${summary || `Node worker for ${name}`}`
+  },
+  {
+    id: 'python-worker',
+    label: 'Python worker',
+    summary: 'Generate a local Python worker or script.',
+    targetAgent: 'SCRIBE',
+    command: ({ name, summary }) => `create ${slugifyName(name)}.py ${summary || `Python worker for ${name}`}`
+  }
+];
+
 function now() {
   return new Date().toISOString();
 }
 
 function makeId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function slugifyName(value = '') {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return normalized || 'agent-artifact';
 }
 
 function createBuiltinRunbooks() {
@@ -263,7 +339,7 @@ function addAuditEvent(state, type, detail) {
 
 function summarizeAction(parsed) {
   if (!parsed) return 'No parsed action available yet.';
-  if (parsed.type === 'ps') return `PowerShell: ${parsed.command}`;
+  if (parsed.type === 'ps') return `${SHELL_LABEL}: ${parsed.command}`;
   if (parsed.type === 'fs') return `Filesystem ${parsed.operation}: ${parsed.path || ''}`.trim();
   if (parsed.type === 'sql') return `SQL: ${parsed.query}`;
   if (parsed.type === 'claw') return `OpenClaw ${parsed.action}`;
@@ -557,10 +633,14 @@ async function executeCodeAction(parsed) {
   };
 }
 
-async function executeParsedTask(parsed) {
+async function executeParsedTask(task) {
+  const parsed = task?.parsed;
   if (!parsed) throw new Error('Task has no parsed action to execute');
 
   if (parsed.type === 'ps') {
+    if (task?.metadata?.autoRepair) {
+      return { type: parsed.type, ...(await runPSAutoRepair(parsed.command)) };
+    }
     return { type: parsed.type, output: await runPSSync(parsed.command) };
   }
 
@@ -628,6 +708,113 @@ export async function listOpsTaskAudit(taskId, limit = 40) {
   return state.audit
     .filter((entry) => entry.detail?.taskId === taskId)
     .slice(0, limit);
+}
+
+export async function listGuidedActions() {
+  return GUIDED_ACTIONS.map((action) => ({ ...action }));
+}
+
+export async function listBuildStationProfiles() {
+  return BUILD_STATION_PROFILES.map((profile) => ({
+    id: profile.id,
+    label: profile.label,
+    summary: profile.summary,
+    targetAgent: profile.targetAgent
+  }));
+}
+
+export async function runGuidedAction(actionId, input = {}) {
+  const action = GUIDED_ACTIONS.find((entry) => entry.id === actionId);
+  if (!action) throw new Error('Guided action not found');
+
+  const requestedBy = String(input.requestedBy || 'operator');
+  const runNow = input.runNow !== false && action.defaults.runNow !== false;
+
+  let title = String(input.title || action.label).trim();
+  let summary = String(input.summary || action.summary).trim();
+  let command = String(input.command || '').trim();
+  let targetAgent = input.targetAgent || action.defaults.targetAgent || 'AUTO';
+  let metadata = {
+    kind: 'guided-action',
+    actionId,
+    autoRepair: Boolean(input.autoRepair ?? action.defaults.autoRepair)
+  };
+
+  if (actionId === 'write-code' || actionId === 'generate-code') {
+    const filename = input.filename || 'module.js';
+    const goal = String(input.goal || input.command || summary || 'Generate a starter file').trim();
+    title = String(input.title || `${action.label}: ${filename}`).trim();
+    summary = String(input.summary || goal).trim();
+    command = `create ${filename} ${goal}`;
+    targetAgent = 'SCRIBE';
+  }
+
+  if (actionId === 'execute-code' || actionId === 'fix-and-run') {
+    if (!command) throw new Error('A shell command is required');
+    title = String(input.title || `${action.label}: ${command}`).trim();
+    summary = String(input.summary || 'Execute a real command through the host shell.').trim();
+    targetAgent = 'SHELL';
+  }
+
+  if (actionId === 'audit-code') {
+    const pathHint = String(input.path || '').trim();
+    command = command || (pathHint ? `git --no-pager diff -- ${pathHint}` : 'git --no-pager status --short --branch && git --no-pager diff --stat');
+    title = String(input.title || (pathHint ? `Audit code: ${pathHint}` : 'Audit workspace code')).trim();
+    summary = String(input.summary || 'Run a lightweight audit command against the current workspace.').trim();
+    targetAgent = 'SHELL';
+  }
+
+  const task = await createOpsTask({
+    title,
+    summary,
+    command,
+    targetAgent,
+    requestedBy,
+    requiresApproval: Boolean(input.requiresApproval),
+    metadata
+  });
+
+  if (!runNow) return { task, executed: false };
+  const executedTask = await runOpsTask(task.id, requestedBy).catch((error) => {
+    if (error.task) return error.task;
+    throw error;
+  });
+  return { task: executedTask, executed: true };
+}
+
+export async function launchBuildStationProfile(profileId, input = {}) {
+  const profile = BUILD_STATION_PROFILES.find((entry) => entry.id === profileId);
+  if (!profile) throw new Error('Build station profile not found');
+
+  const name = String(input.name || '').trim();
+  if (!name) throw new Error('A build artifact name is required');
+
+  const requestedBy = String(input.requestedBy || 'operator');
+  const command = profile.command({
+    name,
+    summary: String(input.summary || '').trim()
+  });
+
+  const task = await createOpsTask({
+    title: String(input.title || `${profile.label}: ${name}`).trim(),
+    summary: String(input.summary || profile.summary).trim(),
+    command,
+    targetAgent: profile.targetAgent,
+    requestedBy,
+    requiresApproval: Boolean(input.requiresApproval),
+    metadata: {
+      kind: 'build-station',
+      profileId,
+      autoRepair: Boolean(profile.autoRepair)
+    }
+  });
+
+  if (input.runNow === false) return { task, executed: false };
+  const executedTask = await runOpsTask(task.id, requestedBy).catch((error) => {
+    if (error.task) return error.task;
+    throw error;
+  });
+  return { task: executedTask, executed: true };
 }
 
 export async function createOpsTask(input) {
@@ -872,7 +1059,7 @@ export async function runOpsTask(taskId, requestedBy = 'operator') {
   });
 
   try {
-    const result = await executeParsedTask(taskSnapshot.parsed);
+    const result = await executeParsedTask(taskSnapshot);
     let completedTask = null;
     await mutateState((state) => {
       const task = state.tasks.find((entry) => entry.id === taskId);

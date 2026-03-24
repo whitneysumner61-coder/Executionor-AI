@@ -10,10 +10,14 @@ import {
   getOpsTask,
   getOpsOverview,
   instantiateOpsRunbook,
+  launchBuildStationProfile,
+  listBuildStationProfiles,
+  listGuidedActions,
   listOpsAudit,
   listOpsRunbooks,
   listOpsTaskAudit,
   listOpsTasks,
+  runGuidedAction,
   runOpsTask,
   updateOpsPolicies
 } from '../services/ops-control.js';
@@ -42,6 +46,42 @@ router.get('/tasks', async (req, res) => {
     res.json({ tasks: await listOpsTasks(req.query.status) });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/guided-actions', async (req, res) => {
+  try {
+    res.json({ actions: await listGuidedActions() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/guided-actions/:id/run', async (req, res) => {
+  try {
+    const result = await runGuidedAction(req.params.id, req.body || {});
+    emitOpsUpdate('guided_action.run', { actionId: req.params.id, taskId: result.task?.id || null });
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message, task: error.task || null });
+  }
+});
+
+router.get('/build-station', async (req, res) => {
+  try {
+    res.json({ profiles: await listBuildStationProfiles() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/build-station/:id/run', async (req, res) => {
+  try {
+    const result = await launchBuildStationProfile(req.params.id, req.body || {});
+    emitOpsUpdate('build_station.run', { profileId: req.params.id, taskId: result.task?.id || null });
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message, task: error.task || null });
   }
 });
 

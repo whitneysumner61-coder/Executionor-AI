@@ -1,6 +1,24 @@
+import { spawnSync } from 'child_process';
+
 export const IS_WINDOWS = process.platform === 'win32';
-export const SHELL_LABEL = IS_WINDOWS ? 'PowerShell' : 'Bash';
-export const SHELL_EXECUTABLE = IS_WINDOWS ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
+
+function detectShell() {
+  if (IS_WINDOWS) {
+    return { label: 'PowerShell', executable: 'powershell.exe', mode: 'powershell' };
+  }
+
+  const pwshCheck = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' });
+  if (pwshCheck.status === 0) {
+    return { label: 'PowerShell', executable: 'pwsh', mode: 'powershell' };
+  }
+
+  return { label: 'Bash', executable: process.env.SHELL || '/bin/bash', mode: 'bash' };
+}
+
+const detectedShell = detectShell();
+export const SHELL_LABEL = detectedShell.label;
+export const SHELL_EXECUTABLE = detectedShell.executable;
+export const SHELL_MODE = detectedShell.mode;
 export const SHELL_ENV = IS_WINDOWS
   ? {
       ...process.env,
@@ -11,7 +29,7 @@ export const SHELL_ENV = IS_WINDOWS
     };
 
 export function buildShellArgs(command) {
-  if (IS_WINDOWS) {
+  if (SHELL_MODE === 'powershell') {
     return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command];
   }
 

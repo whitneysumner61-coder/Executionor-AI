@@ -677,7 +677,55 @@ a{color:var(--blu);text-decoration:none}a:hover{text-decoration:underline}
         </div>
         <div class="ops-grid">
           <div class="ops-panel">
-            <div class="ops-panel-hdr">Create Task</div>
+            <div class="ops-panel-hdr">Simple Actions</div>
+            <div class="ops-panel-bdy">
+              <div class="ops-form-row">
+                <label for="ops-guided-action">Action</label>
+                <select class="ops-sel" id="ops-guided-action"></select>
+              </div>
+              <div class="ops-form-row">
+                <label for="ops-guided-goal">Goal / command</label>
+                <textarea class="ops-ta" id="ops-guided-goal" placeholder="Examples:&#10;create a starter worker that polls an API&#10;npm test&#10;node scripts/build-agent.mjs&#10;audit the routes folder"></textarea>
+              </div>
+              <div class="ops-form-row">
+                <label for="ops-guided-file">Filename (optional)</label>
+                <input class="ops-inp" id="ops-guided-file" placeholder="agent-worker.mjs">
+              </div>
+              <div class="ops-form-row">
+                <label for="ops-guided-path">Audit path (optional)</label>
+                <input class="ops-inp" id="ops-guided-path" placeholder="routes/ops.js">
+              </div>
+              <label class="ops-check"><input type="checkbox" id="ops-guided-run-now" checked> Run immediately when possible</label>
+              <div class="ops-form-actions">
+                <button class="btn primary" onclick="runGuidedActionFromForm()">Run Guided Action</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="ops-panel">
+            <div class="ops-panel-hdr">Agent Build Station</div>
+            <div class="ops-panel-bdy">
+              <div class="ops-form-row">
+                <label for="ops-build-profile">Build profile</label>
+                <select class="ops-sel" id="ops-build-profile"></select>
+              </div>
+              <div class="ops-form-row">
+                <label for="ops-build-name">Artifact name</label>
+                <input class="ops-inp" id="ops-build-name" placeholder="chrome-devtools-helper">
+              </div>
+              <div class="ops-form-row">
+                <label for="ops-build-summary">Summary</label>
+                <textarea class="ops-ta" id="ops-build-summary" placeholder="What this artifact should do and why it exists."></textarea>
+              </div>
+              <label class="ops-check"><input type="checkbox" id="ops-build-run-now" checked> Run immediately when possible</label>
+              <div class="ops-form-actions">
+                <button class="btn primary" onclick="runBuildStationProfileFromForm()">Launch Build Profile</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="ops-panel">
+            <div class="ops-panel-hdr">Advanced Task Builder</div>
             <div class="ops-panel-bdy">
               <div class="ops-form-row">
                 <label for="ops-title">Title</label>

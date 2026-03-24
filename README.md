@@ -65,6 +65,8 @@ It supports:
 - approval-gated execution for non-low-risk actions
 - audit trails for creation, approval, rejection, execution, and failures
 - per-task review packets that show parsed action details, policy approval reasons, full result output, and task-specific audit history
+- simple guided actions for writing code, generating code, executing code, auditing code, and bounded fix-and-run workflows
+- an agent build station for scaffolding skills and local worker scripts without exposing the full advanced task surface first
 - diagnostics for runtime, docs parity, MCP installs, OpenClaw reachability, and git state
 - reusable runbooks that can be loaded into the form or queued directly as new tasks
 - persistent governance policies that control which task types, filesystem operations, OpenClaw actions, and compose actions are blocked
@@ -110,7 +112,7 @@ npm run skill:new -- <skill-name> --force
 
 ### Shell execution
 
-- `POST /api/ps/exec` `{ command, sync? }` — execute through the current host shell
+- `POST /api/ps/exec` `{ command, sync?, autoRepair? }` — execute through the current host shell with optional bounded repair attempts
 - `GET /api/ps/running` — list active shell sessions
 - `POST /api/ps/kill/:sessionId` — kill one active session
 - `POST /api/ps/killall` — stop all active sessions
@@ -159,6 +161,10 @@ npm run skill:new -- <skill-name> --force
 ### Ops
 
 - `GET /api/ops/overview`
+- `GET /api/ops/guided-actions`
+- `POST /api/ops/guided-actions/:id/run`
+- `GET /api/ops/build-station`
+- `POST /api/ops/build-station/:id/run`
 - `GET /api/ops/tasks`
 - `GET /api/ops/tasks/:id`
 - `GET /api/ops/tasks/:id/audit`
@@ -195,6 +201,7 @@ npm run skill:new -- <skill-name> --force
 ## Runtime notes
 
 - The app now adapts core shell, monitor, and log routes to the host runtime instead of assuming Windows-only execution.
+- On non-Windows hosts, Executionor will prefer `pwsh` automatically when PowerShell 7 is installed; otherwise it falls back to the host shell.
 - Some legacy UI copy still reflects the original Windows-first design.
 - Ops filesystem actions are constrained to the workspace root for safety.
 - Approval-gated tasks require fresh approval before rerun.
