@@ -68,6 +68,23 @@ It supports:
 
 Built-in runbooks include workspace inventory, host runtime snapshot, OpenClaw status, and database schema snapshot.
 
+## Copilot skills
+
+Repository-local Copilot skills live under `.github/skills/`.
+
+Create a new skill with:
+
+```bash
+npm run skill:new -- <skill-name>
+```
+
+Useful flags:
+
+```bash
+npm run skill:new -- <skill-name> --dry-run
+npm run skill:new -- <skill-name> --force
+```
+
 ## API reference
 
 ### Health

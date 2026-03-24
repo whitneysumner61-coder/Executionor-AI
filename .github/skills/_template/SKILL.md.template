@@ -1,0 +1,36 @@
+# {{SKILL_TITLE}}
+
+## Purpose
+
+Describe what this skill helps Copilot do in this repository and why it is worth using.
+
+## When to use it
+
+Use this skill when:
+
+- the task clearly maps to this tool or workflow
+- static file reading is not enough
+- using the skill saves operator time or reduces guesswork
+
+Do not use it when a simpler repo-local check is enough.
+
+## Preconditions
+
+- List what must already be running or configured
+- Mention any required local packages, ports, or credentials
+
+## Recommended workflow
+
+1. Describe the fastest high-value way to use the skill.
+2. Call out the main signals to inspect.
+3. Explain how to verify the result before moving on.
+
+## Repo-specific targets
+
+- Add the exact files, routes, flows, or dashboards this skill is most useful for
+- Prefer concrete Executionor surfaces over generic guidance
+
+## Notes for Executionor
+
+- Capture any local constraints, risks, or high-value habits
+- Keep the guidance focused on real usage, not theory
