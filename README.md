@@ -69,6 +69,7 @@ It supports:
 - reusable runbooks that can be loaded into the form or queued directly as new tasks
 - persistent governance policies that control which task types, filesystem operations, OpenClaw actions, and compose actions are blocked
 - compose stack inventory plus one-click up, down, inspect, and logs actions for workspace stacks
+- an OpenClaw operator panel with relay status, bridge reachability, channel/agent inventory, and direct message dispatch
 
 Built-in runbooks include workspace inventory, host runtime snapshot, OpenClaw status, compose stack inventory, and database schema snapshot.
 
@@ -182,6 +183,14 @@ npm run skill:new -- <skill-name> --force
 - `POST /api/compose/stacks/:id/down`
 - `GET /api/compose/stacks/:id/config`
 - `GET /api/compose/stacks/:id/logs`
+
+### OpenClaw
+
+- `GET /api/openclaw/status`
+- `GET /api/openclaw/overview`
+- `GET /api/openclaw/channels`
+- `GET /api/openclaw/agents`
+- `POST /api/openclaw/message`
 
 ## Runtime notes
 

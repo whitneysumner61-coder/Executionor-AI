@@ -39,6 +39,7 @@ const state = {
   opsStacks: [],
   opsStackPreview: {},
   opsPolicies: {},
+  openclawOverview: null,
   lastOpsTasks: [],
   opsTaskReview: null,
   opsTaskAudit: [],
@@ -1074,30 +1075,34 @@ function startLogStream() {
 
 async function loadOpsDashboard() {
   const tasksRoot = document.getElementById('ops-tasks');
+  const clawRoot = document.getElementById('ops-openclaw');
   const stacksRoot = document.getElementById('ops-stacks');
   const runbooksRoot = document.getElementById('ops-runbooks');
   const policiesRoot = document.getElementById('ops-policies');
   const diagRoot = document.getElementById('ops-diag');
   const auditRoot = document.getElementById('ops-audit');
   const statsRoot = document.getElementById('ops-stats');
-  if (!tasksRoot || !stacksRoot || !runbooksRoot || !policiesRoot || !diagRoot || !auditRoot || !statsRoot) return;
+  if (!tasksRoot || !clawRoot || !stacksRoot || !runbooksRoot || !policiesRoot || !diagRoot || !auditRoot || !statsRoot) return;
 
   try {
     const filter = document.getElementById('ops-filter')?.value || '';
-    const [overview, taskData, runbookData, policyData, stackData] = await Promise.all([
+    const [overview, taskData, runbookData, policyData, stackData, openclawData] = await Promise.all([
       GET('/ops/overview'),
       GET(`/ops/tasks${filter ? `?status=${encodeURIComponent(filter)}` : ''}`),
       GET('/ops/runbooks'),
       GET('/ops/policies'),
-      GET('/compose/stacks')
+      GET('/compose/stacks'),
+      GET('/openclaw/overview')
     ]);
 
     state.opsRunbooks = runbookData.runbooks || overview.runbooks || [];
     state.opsStacks = stackData.stacks || overview.stacks || [];
     state.opsPolicies = policyData || overview.policies || {};
+    state.openclawOverview = openclawData || null;
     state.lastOpsTasks = taskData.tasks || [];
     renderOpsStats(overview.counts, overview.diagnosticsSummary);
     renderOpsTasks(taskData.tasks || []);
+    renderOpenClawOverview(state.openclawOverview);
     renderOpsStacks(state.opsStacks);
     renderOpsRunbooks(state.opsRunbooks);
     renderOpsPolicies(state.opsPolicies);
@@ -1107,12 +1112,79 @@ async function loadOpsDashboard() {
   } catch (error) {
     statsRoot.innerHTML = '';
     tasksRoot.innerHTML = `<div class="ops-empty" style="color:var(--red)">${esc(error.message)}</div>`;
+    clawRoot.innerHTML = '';
     stacksRoot.innerHTML = '';
     runbooksRoot.innerHTML = '';
     policiesRoot.innerHTML = '';
     diagRoot.innerHTML = '';
     auditRoot.innerHTML = '';
   }
+}
+
+function renderOpenClawOverview(overview) {
+  const root = document.getElementById('ops-openclaw');
+  if (!root) return;
+  if (!overview) {
+    root.innerHTML = '<div class="ops-empty">OpenClaw overview is not available.</div>';
+    return;
+  }
+
+  const status = overview.status || {};
+  const relay = status.relay || {};
+  const bridge = status.bridge || {};
+  const channels = Array.isArray(overview.channels?.data) ? overview.channels.data : [];
+  const agents = Array.isArray(overview.agents?.data) ? overview.agents.data : [];
+  const selected = channels[0]?.id || channels[0]?.channel_id || '';
+
+  root.innerHTML = `
+    <div class="ops-task">
+      <div class="ops-task-hdr">
+        <div>
+          <div class="ops-task-title">Bridge health</div>
+          <div class="ops-task-meta">
+            ${opsBadge(relay.reachable ? 'relay reachable' : 'relay unavailable', relay.reachable ? 'ok' : 'warn')}
+            ${opsBadge(bridge.reachable ? 'bridge reachable' : 'bridge unavailable', bridge.reachable ? 'ok' : 'warn')}
+          </div>
+        </div>
+        <button class="btn sm" onclick="loadOpsDashboard()">Refresh</button>
+      </div>
+      <div class="ops-inline-note">Relay: ${esc(relay.url || '—')} (${esc(String(relay.status ?? '0'))})</div>
+      <div class="ops-inline-note" style="margin-top:4px">Bridge: ${esc(bridge.url || '—')} (${esc(String(bridge.status ?? '0'))})</div>
+      ${relay.error ? `<div class="ops-inline-note" style="margin-top:6px">Relay error: ${esc(relay.error)}</div>` : ''}
+      ${bridge.error ? `<div class="ops-inline-note" style="margin-top:6px">Bridge error: ${esc(bridge.error)}</div>` : ''}
+    </div>
+    <div class="ops-task" style="margin-top:10px">
+      <div class="ops-task-title">Channels</div>
+      ${channels.length
+        ? `<div class="ops-task-meta" style="margin-top:8px">${channels.slice(0, 12).map((channel) => {
+            const id = channel.id || channel.channel_id || 'unknown';
+            const label = channel.name || channel.title || id;
+            return opsBadge(`${label}`, 'info');
+          }).join('')}</div>`
+        : `<div class="ops-inline-note" style="margin-top:8px">${esc(overview.channels?.error || 'No channels available right now.')}</div>`}
+      <div class="ops-form-row" style="margin-top:10px">
+        <label for="ops-claw-channel">Channel</label>
+        <input class="ops-inp" id="ops-claw-channel" value="${escAttr(selected)}" placeholder="channel id">
+      </div>
+      <div class="ops-form-row">
+        <label for="ops-claw-message">Message</label>
+        <textarea class="ops-ta" id="ops-claw-message" placeholder="Send a relay message to the selected channel."></textarea>
+      </div>
+      <div class="ops-form-actions">
+        <button class="btn primary" onclick="sendOpenClawMessage()">Send Message</button>
+      </div>
+    </div>
+    <div class="ops-task" style="margin-top:10px">
+      <div class="ops-task-title">Agents</div>
+      ${agents.length
+        ? `<div class="ops-task-meta" style="margin-top:8px">${agents.slice(0, 16).map((agent) => {
+            const id = agent.id || agent.agent_id || agent.name || 'agent';
+            return opsBadge(id, 'info');
+          }).join('')}</div>`
+        : `<div class="ops-inline-note" style="margin-top:8px">${esc(overview.agents?.error || 'No agents reported by the bridge right now.')}</div>`}
+      ${overview.lastMessageResult ? `<div class="ops-task-code">${esc(overview.lastMessageResult)}</div>` : ''}
+    </div>
+  `;
 }
 
 function renderOpsStats(counts = {}, diagnosticsSummary = {}) {
@@ -1672,6 +1744,29 @@ async function loadComposeLogs(stackId) {
     const result = await GET(`/compose/stacks/${encodeURIComponent(stackId)}/logs?tail=60`);
     state.opsStackPreview[stackId] = (result.output || 'No logs available.').slice(0, 4000);
     renderOpsStacks(state.opsStacks);
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
+async function sendOpenClawMessage() {
+  const channel = document.getElementById('ops-claw-channel')?.value.trim();
+  const message = document.getElementById('ops-claw-message')?.value.trim();
+  if (!channel || !message) {
+    toast('Channel and message are required', 'info');
+    return;
+  }
+
+  try {
+    const response = await POST('/openclaw/message', { channel, message });
+    document.getElementById('ops-claw-message').value = '';
+    const output = response.data ? JSON.stringify(response.data, null, 2).slice(0, 1200) : 'Message accepted by OpenClaw.';
+    toast('OpenClaw message sent', 'ok');
+    state.openclawOverview = {
+      ...(state.openclawOverview || {}),
+      lastMessageResult: output
+    };
+    renderOpenClawOverview(state.openclawOverview);
   } catch (error) {
     toast(error.message, 'err');
   }
