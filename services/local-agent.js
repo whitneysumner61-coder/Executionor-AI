@@ -97,10 +97,43 @@ function inferTable(command = '') {
   return KNOWN_TABLES.find((table) => lower.includes(table)) || '';
 }
 
+function buildComposeAction(command) {
+  const trimmed = command.trim();
+  const lower = trimmed.toLowerCase();
+  const stack = extractQuoted(trimmed)
+    || trimmed.match(/\b(?:stack|project|compose)\s+([A-Za-z0-9_./-]+)/i)?.[1]
+    || '';
+  const service = trimmed.match(/\bservice\s+([A-Za-z0-9_.-]+)/i)?.[1] || '';
+  const tail = trimmed.match(/\btail\s+(\d+)\b/i)?.[1] || '80';
+
+  if (/\b(list|show|find)\b.*\b(compose|stacks?|projects?)\b/.test(lower)) {
+    return { type: 'compose', action: 'list', stack: '', service: '', tail: 80, explanation: 'Listing compose-based agent stacks in the workspace.' };
+  }
+  if (/\b(status|inspect|ps)\b.*\b(compose|stack|project)\b/.test(lower)) {
+    return { type: 'compose', action: 'status', stack, service: '', tail: 80, explanation: 'Inspecting compose stack status.' };
+  }
+  if (/\b(start|up|launch|boot)\b.*\b(compose|stack|project)\b/.test(lower) || /\bdocker compose up\b/.test(lower)) {
+    return { type: 'compose', action: 'up', stack, service: '', tail: 80, explanation: 'Starting the compose stack with Docker Compose.' };
+  }
+  if (/\b(stop|down|shutdown)\b.*\b(compose|stack|project)\b/.test(lower) || /\bdocker compose down\b/.test(lower)) {
+    return { type: 'compose', action: 'down', stack, service: '', tail: 80, explanation: 'Stopping the compose stack with Docker Compose.' };
+  }
+  if (/\b(logs?)\b.*\b(compose|stack|project)\b/.test(lower) || /\bdocker compose logs\b/.test(lower)) {
+    return { type: 'compose', action: 'logs', stack, service, tail: Number.parseInt(tail, 10) || 80, explanation: 'Reading Docker Compose logs for the selected stack.' };
+  }
+  if (/\b(config|services)\b.*\b(compose|stack|project)\b/.test(lower) || /\bdocker compose config\b/.test(lower)) {
+    return { type: 'compose', action: 'config', stack, service: '', tail: 80, explanation: 'Inspecting the rendered compose configuration.' };
+  }
+  return null;
+}
+
 function buildShellAction(command) {
   const trimmed = command.trim();
   const lower = trimmed.toLowerCase();
   const path = resolvePath(extractWindowsPath(trimmed), WORKSPACE_ROOT);
+  const composeAction = buildComposeAction(trimmed);
+
+  if (composeAction) return composeAction;
 
   if (looksLikePowerShell(trimmed)) {
     return {

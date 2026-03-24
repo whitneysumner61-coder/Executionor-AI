@@ -2,7 +2,7 @@
 
 **Advanced local agent operations control plane**
 
-Executionor is a local-first operator dashboard for running, monitoring, approving, and auditing agent workflows from one interface. It combines live shell execution, filesystem access, database tools, OpenClaw integration, real-time telemetry, and an Ops workspace with reusable runbooks plus persistent governance policies.
+Executionor is a local-first operator dashboard for running, monitoring, approving, and auditing agent workflows from one interface. It combines live shell execution, filesystem access, database tools, OpenClaw integration, Docker Compose stack control, real-time telemetry, and an Ops workspace with reusable runbooks plus persistent governance policies.
 
 ## What it does
 
@@ -12,7 +12,8 @@ Executionor is a local-first operator dashboard for running, monitoring, approvi
 - Dispatches work through local agent roles
 - Tracks Ops tasks with approvals, audit history, diagnostics, and reruns
 - Saves reusable runbooks so common workflows can be queued without rewriting prompts
-- Applies persistent governance policies for approval rules, blocked action types, and runbook controls
+- Applies persistent governance policies for approval rules, blocked action types, compose restrictions, and runbook controls
+- Discovers and manages compose-based agent stacks directly from the dashboard
 - Streams updates over WebSocket so multiple views stay in sync
 
 ## Quick start
@@ -45,9 +46,10 @@ Executionor runs locally with optional integrations. Core UI features work witho
 
 ```text
 server.js                 Express + WebSocket entrypoint
-routes/                   API routes for shell, fs, db, agents, logs, monitor, ops
+routes/                   API routes for shell, fs, db, agents, logs, monitor, ops, compose
 services/local-agent.js   Natural-language task routing into executable actions
-services/ops-control.js   Ops tasks, approvals, audit, diagnostics, runbooks
+services/ops-control.js   Ops tasks, approvals, audit, diagnostics, runbooks, policies
+services/compose-stacks.js Compose stack discovery, inspection, and lifecycle control
 services/host-runtime.js  Host-aware shell/runtime abstraction
 public/                   Static dashboard UI
 sessions/                 Persistent local state, including ops-control.json
@@ -64,9 +66,22 @@ It supports:
 - audit trails for creation, approval, rejection, execution, and failures
 - diagnostics for runtime, docs parity, MCP installs, OpenClaw reachability, and git state
 - reusable runbooks that can be loaded into the form or queued directly as new tasks
-- persistent governance policies that control which task types are blocked and which always require human approval
+- persistent governance policies that control which task types, filesystem operations, OpenClaw actions, and compose actions are blocked
+- compose stack inventory plus one-click up, down, inspect, and logs actions for workspace stacks
 
-Built-in runbooks include workspace inventory, host runtime snapshot, OpenClaw status, and database schema snapshot.
+Built-in runbooks include workspace inventory, host runtime snapshot, OpenClaw status, compose stack inventory, and database schema snapshot.
+
+## Compose agent stacks
+
+Executionor now includes a native interpretation of the `docker/compose-for-agents` idea: instead of vendoring every upstream demo, it can discover and operate compose-based agent stacks already present in your workspace.
+
+Current compose support includes:
+
+- discovery of `compose.yaml`, `compose.yml`, `docker-compose.yaml`, and `docker-compose.yml`
+- runtime inspection of services and containers
+- stack actions for `up`, `down`, `config`, and `logs`
+- compose-aware Ops parsing so natural-language tasks like `list compose stacks` can be executed as first-class Ops work
+- governance controls for blocking selected compose actions
 
 ## Copilot skills
 
@@ -156,6 +171,15 @@ npm run skill:new -- <skill-name> --force
 - `GET /api/ops/audit`
 - `GET /api/ops/diagnostics`
 
+### Compose
+
+- `GET /api/compose/stacks`
+- `GET /api/compose/stacks/:id`
+- `POST /api/compose/stacks/:id/up`
+- `POST /api/compose/stacks/:id/down`
+- `GET /api/compose/stacks/:id/config`
+- `GET /api/compose/stacks/:id/logs`
+
 ## Runtime notes
 
 - The app now adapts core shell, monitor, and log routes to the host runtime instead of assuming Windows-only execution.
@@ -163,6 +187,7 @@ npm run skill:new -- <skill-name> --force
 - Ops filesystem actions are constrained to the workspace root for safety.
 - Approval-gated tasks require fresh approval before rerun.
 - Ops policies are persisted locally and can override operator form choices when governance rules require approval.
+- Compose features require Docker Engine plus Docker Compose to be installed and available on the host.
 
 ## Repository goal
 

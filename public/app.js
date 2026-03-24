@@ -36,6 +36,8 @@ const state = {
   logFile: '',
   logStream: null,
   opsRunbooks: [],
+  opsStacks: [],
+  opsStackPreview: {},
   opsPolicies: {},
   savedSessions: [],
   paletteMode: 'commands',
@@ -1069,26 +1071,30 @@ function startLogStream() {
 
 async function loadOpsDashboard() {
   const tasksRoot = document.getElementById('ops-tasks');
+  const stacksRoot = document.getElementById('ops-stacks');
   const runbooksRoot = document.getElementById('ops-runbooks');
   const policiesRoot = document.getElementById('ops-policies');
   const diagRoot = document.getElementById('ops-diag');
   const auditRoot = document.getElementById('ops-audit');
   const statsRoot = document.getElementById('ops-stats');
-  if (!tasksRoot || !runbooksRoot || !policiesRoot || !diagRoot || !auditRoot || !statsRoot) return;
+  if (!tasksRoot || !stacksRoot || !runbooksRoot || !policiesRoot || !diagRoot || !auditRoot || !statsRoot) return;
 
   try {
     const filter = document.getElementById('ops-filter')?.value || '';
-    const [overview, taskData, runbookData, policyData] = await Promise.all([
+    const [overview, taskData, runbookData, policyData, stackData] = await Promise.all([
       GET('/ops/overview'),
       GET(`/ops/tasks${filter ? `?status=${encodeURIComponent(filter)}` : ''}`),
       GET('/ops/runbooks'),
-      GET('/ops/policies')
+      GET('/ops/policies'),
+      GET('/compose/stacks')
     ]);
 
     state.opsRunbooks = runbookData.runbooks || overview.runbooks || [];
+    state.opsStacks = stackData.stacks || overview.stacks || [];
     state.opsPolicies = policyData || overview.policies || {};
     renderOpsStats(overview.counts, overview.diagnosticsSummary);
     renderOpsTasks(taskData.tasks || []);
+    renderOpsStacks(state.opsStacks);
     renderOpsRunbooks(state.opsRunbooks);
     renderOpsPolicies(state.opsPolicies);
     renderOpsDiagnostics(overview.diagnostics || []);
@@ -1097,6 +1103,7 @@ async function loadOpsDashboard() {
   } catch (error) {
     statsRoot.innerHTML = '';
     tasksRoot.innerHTML = `<div class="ops-empty" style="color:var(--red)">${esc(error.message)}</div>`;
+    stacksRoot.innerHTML = '';
     runbooksRoot.innerHTML = '';
     policiesRoot.innerHTML = '';
     diagRoot.innerHTML = '';
@@ -1107,6 +1114,7 @@ async function loadOpsDashboard() {
 function renderOpsStats(counts = {}, diagnosticsSummary = {}) {
   const stats = [
     ['Total', counts.total || 0],
+    ['Stacks', counts.stacks || state.opsStacks.length || 0],
     ['Runbooks', counts.runbooks || state.opsRunbooks.length || 0],
     ['Policy gates', (state.opsPolicies.requireApprovalForTypes || []).length || 0],
     ['Pending', counts.pending_approval || 0],
@@ -1162,6 +1170,43 @@ function renderOpsTasks(tasks = []) {
         <div class="ops-actions">
           ${task.requiresApproval && ['pending_approval', 'completed', 'failed'].includes(task.status) ? `<button class="btn sm" onclick="approveOpsTask('${escapeJs(task.id)}')">${task.status === 'pending_approval' ? 'Approve' : 'Approve Again'}</button><button class="btn sm danger" onclick="rejectOpsTask('${escapeJs(task.id)}')">Reject</button>` : ''}
           ${task.executable && (task.status === 'approved' || (!task.requiresApproval && !['running', 'rejected'].includes(task.status))) ? `<button class="btn sm primary" onclick="runOpsTaskAction('${escapeJs(task.id)}')">${task.lastRun ? 'Run Again' : 'Run'}</button>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderOpsStacks(stacks = []) {
+  const root = document.getElementById('ops-stacks');
+  if (!root) return;
+  if (!stacks.length) {
+    root.innerHTML = '<div class="ops-empty">No compose stacks found in the workspace.</div>';
+    return;
+  }
+
+  root.innerHTML = stacks.map((stack) => {
+    const preview = state.opsStackPreview[stack.id] || '';
+    const runningCount = (stack.containers || []).filter((container) => /running/i.test(container.State || '')).length;
+    return `
+      <div class="ops-task">
+        <div class="ops-task-hdr">
+          <div>
+            <div class="ops-task-title">${esc(stack.name)}</div>
+            <div class="ops-task-meta">
+              ${opsBadge(stack.status || 'idle', stack.status === 'running' ? 'ok' : 'info')}
+              ${opsBadge(`${runningCount}/${(stack.services || []).length || 0} services`, runningCount ? 'ok' : 'warn')}
+            </div>
+          </div>
+          <div class="ops-inline-note">${esc(stack.relativeDir || '.')}</div>
+        </div>
+        <div class="ops-inline-note">${esc(stack.composeFile || '')}</div>
+        ${(stack.services || []).length ? `<div class="ops-task-meta" style="margin-top:8px">${stack.services.map((service) => opsBadge(service, 'info')).join('')}</div>` : ''}
+        ${preview ? `<div class="ops-task-code">${esc(preview)}</div>` : ''}
+        <div class="ops-actions">
+          <button class="btn sm" onclick="inspectComposeStack('${escapeJs(stack.id)}')">Inspect</button>
+          <button class="btn sm primary" onclick="startComposeStack('${escapeJs(stack.id)}')">Up</button>
+          <button class="btn sm danger" onclick="stopComposeStack('${escapeJs(stack.id)}')">Down</button>
+          <button class="btn sm" onclick="loadComposeLogs('${escapeJs(stack.id)}')">Logs</button>
         </div>
       </div>
     `;
@@ -1228,6 +1273,10 @@ function renderOpsPolicies(policies = {}) {
     <div class="ops-form-row">
       <label for="ops-pol-blocked-claw">Blocked OpenClaw actions</label>
       <input class="ops-inp" id="ops-pol-blocked-claw" value="${escAttr((policies.blockedClawActions || []).join(', '))}" placeholder="send_message">
+    </div>
+    <div class="ops-form-row">
+      <label for="ops-pol-blocked-compose">Blocked compose actions</label>
+      <input class="ops-inp" id="ops-pol-blocked-compose" value="${escAttr((policies.blockedComposeActions || []).join(', '))}" placeholder="down">
     </div>
     <div class="ops-form-row">
       <label for="ops-pol-notes">Policy notes</label>
@@ -1432,6 +1481,7 @@ async function saveOpsPolicies() {
       blockedTaskTypes: document.getElementById('ops-pol-blocked-types').value.trim(),
       blockedFsOperations: document.getElementById('ops-pol-blocked-fs').value.trim(),
       blockedClawActions: document.getElementById('ops-pol-blocked-claw').value.trim(),
+      blockedComposeActions: document.getElementById('ops-pol-blocked-compose').value.trim(),
       notes: document.getElementById('ops-pol-notes').value.trim()
     });
     state.opsPolicies = policies;
@@ -1444,6 +1494,55 @@ async function saveOpsPolicies() {
 
 function opsBadge(label, tone) {
   return `<span class="ops-badge ${tone}">${esc(label)}</span>`;
+}
+
+async function inspectComposeStack(stackId) {
+  try {
+    const details = await GET(`/compose/stacks/${encodeURIComponent(stackId)}`);
+    state.opsStackPreview[stackId] = JSON.stringify({
+      services: details.services || [],
+      containers: (details.containers || []).map((container) => ({
+        service: container.Service,
+        state: container.State,
+        status: container.Status
+      }))
+    }, null, 2).slice(0, 1200);
+    renderOpsStacks(state.opsStacks);
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
+async function startComposeStack(stackId) {
+  try {
+    const result = await POST(`/compose/stacks/${encodeURIComponent(stackId)}/up`, { build: true });
+    state.opsStackPreview[stackId] = result.output || 'Stack started.';
+    toast('Compose stack started', 'ok');
+    await loadOpsDashboard();
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
+async function stopComposeStack(stackId) {
+  try {
+    const result = await POST(`/compose/stacks/${encodeURIComponent(stackId)}/down`, {});
+    state.opsStackPreview[stackId] = result.output || 'Stack stopped.';
+    toast('Compose stack stopped', 'ok');
+    await loadOpsDashboard();
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
+async function loadComposeLogs(stackId) {
+  try {
+    const result = await GET(`/compose/stacks/${encodeURIComponent(stackId)}/logs?tail=60`);
+    state.opsStackPreview[stackId] = (result.output || 'No logs available.').slice(0, 4000);
+    renderOpsStacks(state.opsStacks);
+  } catch (error) {
+    toast(error.message, 'err');
+  }
 }
 
 function escAttr(value) {

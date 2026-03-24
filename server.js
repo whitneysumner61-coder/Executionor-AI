@@ -20,6 +20,7 @@ import streamRouter   from './routes/stream.js';
 import logsRouter     from './routes/logs.js';
 import monitorRouter  from './routes/monitor.js';
 import opsRouter      from './routes/ops.js';
+import composeRouter  from './routes/compose.js';
 import { IS_WINDOWS, SHELL_EXECUTABLE, SHELL_LABEL } from './services/host-runtime.js';
 import { attachWebSocket } from './services/ws-manager.js';
 import { WORKSPACE_ROOT } from './services/local-agent.js';
@@ -47,6 +48,7 @@ app.use('/api/stream',   streamRouter);   // SSE token streaming
 app.use('/api/logs',     logsRouter);     // SSE log tail
 app.use('/api/monitor',  monitorRouter);  // process monitor
 app.use('/api/ops',      opsRouter);      // ops control plane
+app.use('/api/compose',  composeRouter);  // docker compose agent stacks
 
 // ── Health ────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
@@ -67,6 +69,7 @@ app.get('/api/health', (req, res) => {
       rawSQL:   !!(process.env.SUPABASE_DB_URL || process.env.DATABASE_URL),
       openclaw: !!process.env.OPENCLAW_RELAY_URL,
       ops:      true,
+      compose:  true,
     }
   });
 });

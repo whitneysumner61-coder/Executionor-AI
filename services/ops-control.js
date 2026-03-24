@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, rm, stat, writeFile, rename } from 'fs/promis
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
+import { getComposeRuntime, listComposeStacks, runComposeAction } from './compose-stacks.js';
 import { dispatchLocalAgent, WORKSPACE_ROOT } from './local-agent.js';
 import { runPSSync } from '../routes/ps.js';
 
@@ -71,6 +72,22 @@ function createBuiltinRunbooks() {
       risk: 'low'
     },
     {
+      id: 'runbook_compose_stack_inventory',
+      title: 'Compose stack inventory',
+      summary: 'Discover compose-based agent stacks in the workspace and inspect their current runtime status.',
+      command: 'list compose stacks',
+      targetAgent: 'SHELL',
+      requiresApproval: false,
+      tags: ['compose', 'docker', 'stacks'],
+      builtin: true,
+      createdBy: 'system',
+      createdAt,
+      updatedAt: createdAt,
+      lastUsedAt: null,
+      previewType: 'compose',
+      risk: 'low'
+    },
+    {
       id: 'runbook_database_schema_snapshot',
       title: 'Database schema snapshot',
       summary: 'Review the public database schema quickly before writing new SQL or changing data flows.',
@@ -108,6 +125,7 @@ function createDefaultPolicies() {
     blockedTaskTypes: [],
     blockedFsOperations: [],
     blockedClawActions: [],
+    blockedComposeActions: [],
     notes: 'Require review for shell, SQL, and code tasks. Use blocked lists only for actions you never want queued from the dashboard.'
   };
 }
@@ -158,9 +176,10 @@ function normalizeStringList(values, allowed = null) {
 
 function mergePolicies(savedPolicies = {}) {
   const defaults = createDefaultPolicies();
-  const taskTypes = ['ps', 'fs', 'sql', 'claw', 'code'];
+  const taskTypes = ['ps', 'fs', 'sql', 'claw', 'code', 'compose'];
   const fsOperations = ['list', 'read', 'find', 'mkdir', 'write', 'rename', 'delete'];
   const clawActions = ['status', 'list_channels', 'list_agents', 'send_message'];
+  const composeActions = ['list', 'status', 'up', 'down', 'logs', 'config'];
   const hasApprovalOverride = Object.prototype.hasOwnProperty.call(savedPolicies, 'requireApprovalForTypes');
 
   return {
@@ -177,6 +196,7 @@ function mergePolicies(savedPolicies = {}) {
     blockedTaskTypes: normalizeStringList(savedPolicies.blockedTaskTypes, taskTypes),
     blockedFsOperations: normalizeStringList(savedPolicies.blockedFsOperations, fsOperations),
     blockedClawActions: normalizeStringList(savedPolicies.blockedClawActions, clawActions),
+    blockedComposeActions: normalizeStringList(savedPolicies.blockedComposeActions, composeActions),
     notes: String(savedPolicies.notes || defaults.notes).trim().slice(0, 500) || defaults.notes
   };
 }
@@ -247,6 +267,7 @@ function summarizeAction(parsed) {
   if (parsed.type === 'fs') return `Filesystem ${parsed.operation}: ${parsed.path || ''}`.trim();
   if (parsed.type === 'sql') return `SQL: ${parsed.query}`;
   if (parsed.type === 'claw') return `OpenClaw ${parsed.action}`;
+  if (parsed.type === 'compose') return `Compose ${parsed.action}${parsed.stack ? `: ${parsed.stack}` : ''}`;
   if (parsed.type === 'code') return `Generate ${parsed.filename}`;
   return JSON.stringify(parsed);
 }
@@ -269,6 +290,12 @@ function classifyRisk(parsed) {
 
   if (parsed.type === 'claw') {
     return ['status', 'list_channels', 'list_agents'].includes(parsed.action) ? 'low' : 'medium';
+  }
+
+  if (parsed.type === 'compose') {
+    if (['list', 'status', 'config'].includes(parsed.action)) return 'low';
+    if (parsed.action === 'logs') return 'medium';
+    return 'high';
   }
 
   if (parsed.type === 'code') return 'medium';
@@ -294,6 +321,10 @@ function evaluatePolicies(parsed, policies) {
 
   if (parsed.type === 'claw' && policies.blockedClawActions.includes(parsed.action)) {
     throw new Error(`Policy blocks OpenClaw action: ${parsed.action}.`);
+  }
+
+  if (parsed.type === 'compose' && policies.blockedComposeActions.includes(parsed.action)) {
+    throw new Error(`Policy blocks compose action: ${parsed.action}.`);
   }
 
   return {
@@ -524,6 +555,10 @@ async function executeParsedTask(parsed) {
     return { type: parsed.type, ...(await executeClawAction(parsed)) };
   }
 
+  if (parsed.type === 'compose') {
+    return { type: parsed.type, ...(await runComposeAction(parsed)) };
+  }
+
   if (parsed.type === 'code') {
     return { type: parsed.type, ...(await executeCodeAction(parsed)) };
   }
@@ -730,7 +765,8 @@ export async function updateOpsPolicies(input = {}, updatedBy = 'operator') {
       requireApprovalForTypes: state.policies.requireApprovalForTypes,
       blockedTaskTypes: state.policies.blockedTaskTypes,
       blockedFsOperations: state.policies.blockedFsOperations,
-      blockedClawActions: state.policies.blockedClawActions
+      blockedClawActions: state.policies.blockedClawActions,
+      blockedComposeActions: state.policies.blockedComposeActions
     });
     return state;
   });
@@ -927,17 +963,28 @@ export async function collectOpsDiagnostics() {
     detail: `${(state.runbooks || []).length} reusable runbook${(state.runbooks || []).length === 1 ? '' : 's'} available to operators.`
   });
 
+  const composeRuntime = await getComposeRuntime();
+  const composeStacks = composeRuntime.available ? await listComposeStacks().catch(() => []) : [];
+  checks.push({
+    id: 'compose',
+    label: 'Docker Compose agent stacks',
+    status: composeRuntime.available ? 'ok' : 'warn',
+    detail: composeRuntime.available
+      ? `${composeRuntime.version}; ${composeStacks.length} compose stack${composeStacks.length === 1 ? '' : 's'} discovered in the workspace.`
+      : `Docker Compose is unavailable: ${composeRuntime.error || 'unknown error'}.`
+  });
+
   checks.push({
     id: 'policies',
     label: 'Ops governance policies',
     status: state.policies?.requireApprovalForTypes?.length ? 'ok' : 'warn',
-    detail: `Approval required for: ${(state.policies?.requireApprovalForTypes || []).join(', ') || 'nothing'}; blocked task types: ${(state.policies?.blockedTaskTypes || []).join(', ') || 'none'}.`
+    detail: `Approval required for: ${(state.policies?.requireApprovalForTypes || []).join(', ') || 'nothing'}; blocked task types: ${(state.policies?.blockedTaskTypes || []).join(', ') || 'none'}; blocked compose actions: ${(state.policies?.blockedComposeActions || []).join(', ') || 'none'}.`
   });
 
   checks.push({
     id: 'docs',
     label: 'README parity',
-    status: readme.includes('/api/ops/runbooks') && readme.includes('/api/ops/policies') && readme.includes('/api/logs') && readme.includes('/api/monitor') ? 'ok' : 'warn',
+    status: readme.includes('/api/compose/stacks') && readme.includes('/api/ops/runbooks') && readme.includes('/api/ops/policies') && readme.includes('/api/logs') && readme.includes('/api/monitor') ? 'ok' : 'warn',
     detail: 'README coverage should reflect the current routes, runbooks, and control-plane features.'
   });
 
@@ -967,12 +1014,14 @@ export async function getOpsOverview() {
   const tasks = sortTasks(state.tasks);
   const runbooks = sortRunbooks(state.runbooks || []);
   const policies = mergePolicies(state.policies);
+  const composeStacks = await listComposeStacks().catch(() => []);
   const diagnostics = await collectOpsDiagnostics();
   const counts = taskCounts(tasks);
   return {
-    counts: { ...counts, runbooks: runbooks.length },
+    counts: { ...counts, runbooks: runbooks.length, stacks: composeStacks.length },
     tasks: tasks.slice(0, 25),
     runbooks: runbooks.slice(0, 25),
+    stacks: composeStacks.slice(0, 25),
     policies,
     audit: state.audit.slice(0, 25),
     diagnostics,
