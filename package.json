@@ -1,0 +1,25 @@
+{
+  "name": "executionor",
+  "version": "1.0.0",
+  "description": "EXECUTIONOR — Production Agent Control Board",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server-filesystem": "^2026.1.14",
+    "@mseep/windows-command-line-mcp-server": "^0.3.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "@wonderwhy-er/desktop-commander": "^0.2.38",
+    "chrome-devtools-mcp": "^0.20.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2",
+    "node-pty": "^1.1.0",
+    "pg": "^8.20.0",
+    "ws": "^8.17.0"
+  }
+}
