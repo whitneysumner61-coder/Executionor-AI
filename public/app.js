@@ -4,7 +4,7 @@ const API = `${window.location.origin}/api`;
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
 
 const AGENTS = [
-  { id: 'SHELL', name: 'Shell', role: 'Real PowerShell Executor', orb: 'o-sh', emoji: '⚡' },
+  { id: 'SHELL', name: 'Shell', role: 'Real Host Shell Executor', orb: 'o-sh', emoji: '⚡' },
   { id: 'PHANTOM', name: 'Phantom', role: 'Filesystem Operator', orb: 'o-gh', emoji: '👻' },
   { id: 'HYDRA', name: 'Hydra', role: 'SQL and Data Router', orb: 'o-hy', emoji: '🗃' },
   { id: 'SCRIBE', name: 'Scribe', role: 'Template Builder', orb: 'o-sc', emoji: '✍' },
@@ -35,6 +35,7 @@ const state = {
   activeSortProc: 'cpu',
   logFile: '',
   logStream: null,
+  opsRunbooks: [],
   savedSessions: [],
   paletteMode: 'commands',
   paletteItems: [],
@@ -86,7 +87,7 @@ async function boot() {
   setAgent('SHELL');
   selT('SHELL');
   switchTerminalSession(0);
-  bubble('System', AUTO_AGENT, 'Executionor local mode is online.\nReal PowerShell, real filesystem, live process data, and optional real database/OpenClaw integrations are ready.');
+  bubble('System', AUTO_AGENT, 'Executionor local mode is online.\nReal host-shell execution, real filesystem access, live process data, and optional real database/OpenClaw integrations are ready.');
   setInterval(checkHealth, 20000);
 }
 
@@ -1066,26 +1067,31 @@ function startLogStream() {
 
 async function loadOpsDashboard() {
   const tasksRoot = document.getElementById('ops-tasks');
+  const runbooksRoot = document.getElementById('ops-runbooks');
   const diagRoot = document.getElementById('ops-diag');
   const auditRoot = document.getElementById('ops-audit');
   const statsRoot = document.getElementById('ops-stats');
-  if (!tasksRoot || !diagRoot || !auditRoot || !statsRoot) return;
+  if (!tasksRoot || !runbooksRoot || !diagRoot || !auditRoot || !statsRoot) return;
 
   try {
     const filter = document.getElementById('ops-filter')?.value || '';
-    const [overview, taskData] = await Promise.all([
+    const [overview, taskData, runbookData] = await Promise.all([
       GET('/ops/overview'),
-      GET(`/ops/tasks${filter ? `?status=${encodeURIComponent(filter)}` : ''}`)
+      GET(`/ops/tasks${filter ? `?status=${encodeURIComponent(filter)}` : ''}`),
+      GET('/ops/runbooks')
     ]);
 
+    state.opsRunbooks = runbookData.runbooks || overview.runbooks || [];
     renderOpsStats(overview.counts, overview.diagnosticsSummary);
     renderOpsTasks(taskData.tasks || []);
+    renderOpsRunbooks(state.opsRunbooks);
     renderOpsDiagnostics(overview.diagnostics || []);
     renderOpsAudit(overview.audit || []);
     document.getElementById('ops-sync').textContent = `updated ${new Date().toLocaleTimeString()}`;
   } catch (error) {
     statsRoot.innerHTML = '';
     tasksRoot.innerHTML = `<div class="ops-empty" style="color:var(--red)">${esc(error.message)}</div>`;
+    runbooksRoot.innerHTML = '';
     diagRoot.innerHTML = '';
     auditRoot.innerHTML = '';
   }
@@ -1094,6 +1100,7 @@ async function loadOpsDashboard() {
 function renderOpsStats(counts = {}, diagnosticsSummary = {}) {
   const stats = [
     ['Total', counts.total || 0],
+    ['Runbooks', counts.runbooks || state.opsRunbooks.length || 0],
     ['Pending', counts.pending_approval || 0],
     ['Approved', counts.approved || 0],
     ['Running', counts.running || 0],
@@ -1141,6 +1148,7 @@ function renderOpsTasks(tasks = []) {
         <div class="ops-task-summary">${esc(task.summary || '')}</div>
         ${task.command ? `<div class="ops-task-code">${esc(task.command)}</div>` : ''}
         ${task.parsed ? `<div class="ops-inline-note" style="margin-top:8px">Parsed as ${esc(task.parsed.type || 'unknown')} via ${esc(task.parsed.agentId || task.targetAgent || 'AUTO')}.</div>` : '<div class="ops-inline-note" style="margin-top:8px">No executable command was captured, so this task is stored as planning context only.</div>'}
+        ${task.metadata?.runbookTitle ? `<div class="ops-inline-note" style="margin-top:6px">Created from runbook: ${esc(task.metadata.runbookTitle)}</div>` : ''}
         ${task.decision ? `<div class="ops-inline-note" style="margin-top:6px">Decision: ${esc(task.decision.decision)} by ${esc(task.decision.by || 'operator')}${task.decision.note ? ` — ${esc(task.decision.note)}` : ''}</div>` : ''}
         ${resultPreview ? `<div class="ops-task-code">${esc(resultPreview)}</div>` : ''}
         <div class="ops-actions">
@@ -1150,6 +1158,40 @@ function renderOpsTasks(tasks = []) {
       </div>
     `;
   }).join('');
+}
+
+function renderOpsRunbooks(runbooks = []) {
+  const root = document.getElementById('ops-runbooks');
+  if (!runbooks.length) {
+    root.innerHTML = '<div class="ops-empty">No runbooks available yet.</div>';
+    return;
+  }
+
+  root.innerHTML = runbooks.map((runbook) => `
+    <div class="ops-task">
+      <div class="ops-task-hdr">
+        <div>
+          <div class="ops-task-title">${esc(runbook.title)}</div>
+          <div class="ops-task-meta">
+            ${opsBadge(runbook.builtin ? 'builtin' : 'custom', runbook.builtin ? 'info' : 'ok')}
+            ${opsBadge(runbook.targetAgent || 'AUTO', 'info')}
+            ${opsBadge(runbook.risk || 'medium', taskRiskTone(runbook.risk))}
+            ${runbook.requiresApproval ? opsBadge('approval', 'warn') : opsBadge('auto', 'ok')}
+          </div>
+        </div>
+        <div class="ops-inline-note">${esc(fmtDateTime(runbook.updatedAt || runbook.createdAt))}</div>
+      </div>
+      <div class="ops-task-summary">${esc(runbook.summary || '')}</div>
+      ${runbook.command ? `<div class="ops-task-code">${esc(runbook.command)}</div>` : ''}
+      ${Array.isArray(runbook.tags) && runbook.tags.length ? `<div class="ops-task-meta" style="margin-top:8px">${runbook.tags.map((tag) => opsBadge(tag, 'info')).join('')}</div>` : ''}
+      <div class="ops-inline-note" style="margin-top:8px">Last used: ${esc(fmtDateTime(runbook.lastUsedAt))}</div>
+      <div class="ops-actions">
+        <button class="btn sm" onclick="applyOpsRunbook('${escapeJs(runbook.id)}')">Use Template</button>
+        <button class="btn sm primary" onclick="queueOpsRunbook('${escapeJs(runbook.id)}')">Queue Task</button>
+        ${runbook.builtin ? '' : `<button class="btn sm danger" onclick="deleteOpsRunbookAction('${escapeJs(runbook.id)}')">Delete</button>`}
+      </div>
+    </div>
+  `).join('');
 }
 
 function renderOpsDiagnostics(checks = []) {
@@ -1218,6 +1260,34 @@ async function createOpsTaskFromForm() {
   }
 }
 
+async function createOpsRunbookFromForm() {
+  const title = document.getElementById('ops-title').value.trim();
+  const summary = document.getElementById('ops-summary').value.trim();
+  const command = document.getElementById('ops-command').value.trim();
+  const targetAgent = document.getElementById('ops-agent').value;
+  const createdBy = document.getElementById('ops-requested-by').value.trim() || 'operator';
+  const requiresApproval = document.getElementById('ops-approval').checked;
+  const tags = document.getElementById('ops-tags').value.trim();
+
+  if (!title) {
+    toast('Runbook title is required', 'info');
+    return;
+  }
+  if (!command) {
+    toast('Runbooks need a reusable command or instruction', 'info');
+    return;
+  }
+
+  try {
+    await POST('/ops/runbooks', { title, summary, command, targetAgent, createdBy, requiresApproval, tags });
+    document.getElementById('ops-tags').value = '';
+    toast('Runbook saved', 'ok');
+    await loadOpsDashboard();
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
 async function approveOpsTask(taskId) {
   const reviewedBy = document.getElementById('ops-requested-by').value.trim() || 'operator';
   const note = prompt('Approval note (optional)', '') ?? '';
@@ -1251,6 +1321,56 @@ async function runOpsTaskAction(taskId) {
     toast(error.message, 'err');
   }
   await loadOpsDashboard();
+}
+
+function applyOpsRunbook(runbookId) {
+  const runbook = state.opsRunbooks.find((entry) => entry.id === runbookId);
+  if (!runbook) {
+    toast('Runbook not found', 'err');
+    return;
+  }
+
+  document.getElementById('ops-title').value = runbook.title || '';
+  document.getElementById('ops-summary').value = runbook.summary || '';
+  document.getElementById('ops-command').value = runbook.command || '';
+  document.getElementById('ops-agent').value = runbook.targetAgent || 'AUTO';
+  document.getElementById('ops-approval').checked = Boolean(runbook.requiresApproval);
+  document.getElementById('ops-tags').value = Array.isArray(runbook.tags) ? runbook.tags.join(', ') : '';
+  toast(`Loaded runbook: ${runbook.title}`, 'ok');
+}
+
+async function queueOpsRunbook(runbookId) {
+  const requestedBy = document.getElementById('ops-requested-by').value.trim() || 'operator';
+  try {
+    await POST(`/ops/runbooks/${encodeURIComponent(runbookId)}/instantiate`, { requestedBy });
+    toast('Runbook queued as task', 'ok');
+    await loadOpsDashboard();
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
+async function deleteOpsRunbookAction(runbookId) {
+  const runbook = state.opsRunbooks.find((entry) => entry.id === runbookId);
+  if (!runbook) {
+    toast('Runbook not found', 'err');
+    return;
+  }
+  if (!confirm(`Delete runbook "${runbook.title}"?`)) return;
+
+  const deletedBy = document.getElementById('ops-requested-by').value.trim() || 'operator';
+  try {
+    await fetch(`${API}/ops/runbooks/${encodeURIComponent(runbookId)}?deletedBy=${encodeURIComponent(deletedBy)}`, { method: 'DELETE' })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        return body;
+      });
+    toast('Runbook deleted', 'ok');
+    await loadOpsDashboard();
+  } catch (error) {
+    toast(error.message, 'err');
+  }
 }
 
 function opsBadge(label, tone) {

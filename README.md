@@ -1,166 +1,147 @@
-# EXECUTIONOR v1.1
-**Agent Control Board — Stay Visual · Stay Free · Stay Opensource · Stay Executionor**
+# EXECUTIONOR AI
 
-A production-grade AI agent control board that runs locally on your Windows machine.
-Real PowerShell execution. Real filesystem. Real Supabase. Real Claude agents.
+**Advanced local agent operations control plane**
 
----
+Executionor is a local-first operator dashboard for running, monitoring, approving, and auditing agent workflows from one interface. It combines live shell execution, filesystem access, database tools, OpenClaw integration, real-time telemetry, and an Ops workspace with reusable runbooks.
 
-## Quick Start
+## What it does
 
-```powershell
-cd D:\tools\executionor
-.\start.ps1
+- Runs real host-shell commands through the dashboard with streaming output
+- Browses and edits the local workspace
+- Connects to Supabase and optional raw PostgreSQL access
+- Dispatches work through local agent roles
+- Tracks Ops tasks with approvals, audit history, diagnostics, and reruns
+- Saves reusable runbooks so common workflows can be queued without rewriting prompts
+- Streams updates over WebSocket so multiple views stay in sync
+
+## Quick start
+
+```bash
+npm install
+npm start
 ```
 
-Then open: **http://localhost:3100**
+Then open `http://localhost:3100`
 
----
+On Windows you can still use `start.ps1` if that matches your environment.
 
-## First Run
+## Required environment
 
-On first launch, a setup wizard will appear asking for your Anthropic API key.
-Alternatively, click **⚙ Settings** in the sidebar to configure all keys at runtime.
-Keys are written to `.env` and hot-loaded — no server restart needed.
+Executionor runs locally with optional integrations. Core UI features work without every service being configured, but these unlock the full surface:
 
----
+| Key | Purpose |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Claude-backed agent dispatch |
+| `SUPABASE_URL` | Supabase browser/API access |
+| `SUPABASE_SERVICE_KEY` or `SUPABASE_ANON_KEY` | Supabase queries |
+| `SUPABASE_DB_URL` or `DATABASE_URL` | Raw SQL tasks |
+| `OPENCLAW_RELAY_URL` | OpenClaw relay health and actions |
+| `OPENCLAW_BRIDGE_URL` | OpenClaw bridge health and tool calls |
+| `OPENCLAW_GATEWAY_TOKEN` | Optional OpenClaw auth |
+| `DASHBOARD_TOKEN` | Optional dashboard hardening |
 
-## Required Keys
+## Core architecture
 
-| Key | Where to find it | Required for |
-|-----|-----------------|--------------|
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com/settings/keys | All 5 agents |
-| `SUPABASE_URL` | Supabase → Project Settings → API | DB panel |
-| `SUPABASE_SERVICE_KEY` | Supabase → Project Settings → API | DB panel |
-| `SUPABASE_DB_URL` | Supabase → Settings → Database → Connection string URI | Raw SQL support |
-
----
-
-## Architecture
-
-```
-D:\tools\executionor\
-├── server.js              ← Express + WebSocket server (port 3100)
-├── .env                   ← Your config (edit via Settings UI)
-├── start.ps1              ← Launcher script
-│
-├── routes/
-│   ├── ps.js              ← Real PowerShell via child_process.spawn
-│   ├── fs.js              ← Real filesystem (readdir/readFile/writeFile)
-│   ├── db.js              ← Supabase JS client + pg driver for raw SQL
-│   ├── agents.js          ← Claude API dispatch with auto-execution
-│   ├── openclaw.js        ← OpenClaw relay + bridge proxy
-│   ├── config.js          ← Live .env read/write (Settings UI backend)
-│   └── sessions.js        ← Session persistence to disk (sessions/*.json)
-│
-├── services/
-│   └── ws-manager.js      ← WebSocket broadcast for PS streaming
-│
-└── public/
-    └── index.html         ← Full Claude Desktop-styled frontend
+```text
+server.js                 Express + WebSocket entrypoint
+routes/                   API routes for shell, fs, db, agents, logs, monitor, ops
+services/local-agent.js   Natural-language task routing into executable actions
+services/ops-control.js   Ops tasks, approvals, audit, diagnostics, runbooks
+services/host-runtime.js  Host-aware shell/runtime abstraction
+public/                   Static dashboard UI
+sessions/                 Persistent local state, including ops-control.json
 ```
 
----
+## Ops control plane
 
-## API Reference
+The Ops workspace is the current high-value core of the app.
 
-### PowerShell
-- `POST /api/ps/exec` `{ command, sync? }` — execute, streams via WebSocket
-- `GET  /api/ps/running` — list active processes
-- `POST /api/ps/kill/:sessionId` — kill a specific process
-- `POST /api/ps/killall` — kill everything
-- `GET  /api/ps/history` — last 50 commands
+It supports:
 
-### Filesystem
-- `GET  /api/fs/list?path=D:\tools` — list directory
-- `GET  /api/fs/read?path=D:\file.ps1` — read file content
-- `POST /api/fs/write` `{ path, content }` — write file
-- `DELETE /api/fs/delete?path=...` — delete file
+- task creation from natural-language instructions
+- approval-gated execution for non-low-risk actions
+- audit trails for creation, approval, rejection, execution, and failures
+- diagnostics for runtime, docs parity, MCP installs, OpenClaw reachability, and git state
+- reusable runbooks that can be loaded into the form or queued directly as new tasks
 
-### Database (Supabase)
-- `POST /api/db/select` `{ table|sql, filters?, limit?, orderBy? }` — query
-- `POST /api/db/query`  `{ sql }` — raw SQL (requires SUPABASE_DB_URL)
-- `GET  /api/db/tables` — list tables
-- `GET  /api/db/schema?table=name` — column schema
+Built-in runbooks include workspace inventory, host runtime snapshot, OpenClaw status, and database schema snapshot.
 
-### Agents
-- `POST /api/agents/dispatch` `{ agentId, command, history? }` — dispatch
-- `GET  /api/agents/list` — list agent definitions
-
-### Config
-- `GET  /api/config` — key status (no values exposed)
-- `POST /api/config` `{ key, value }` — write single key
-- `POST /api/config/bulk` `{ pairs: { KEY: VALUE } }` — write multiple keys
-
-### Sessions
-- `GET  /api/sessions` — list saved sessions
-- `GET  /api/sessions/:id` — load session
-- `POST /api/sessions` `{ sessionId, messages, title }` — save
-- `DELETE /api/sessions/:id` — delete
+## API reference
 
 ### Health
-- `GET  /api/health` — server status + key presence check
 
----
+- `GET /api/health` — status, workspace root, host runtime, configured integrations
 
-## The 5 Agents
+### Shell execution
 
-| Agent | Target | Behavior |
-|-------|--------|---------|
-| **SHELL** | PowerShell | Translates natural language → PowerShell, executes via `/api/ps/exec` |
-| **PHANTOM** | Filesystem | Opens files in editor, browses directories |
-| **HYDRA** | Supabase | Writes SQL queries, routes to `/api/db/select` |
-| **SCRIBE** | Code Gen | Generates code, opens result in editor as new tab |
-| **CLAW** | OpenClaw | Interfaces with your OpenClaw relay on port 4588 |
+- `POST /api/ps/exec` `{ command, sync? }` — execute through the current host shell
+- `GET /api/ps/running` — list active shell sessions
+- `POST /api/ps/kill/:sessionId` — kill one active session
+- `POST /api/ps/killall` — stop all active sessions
+- `GET /api/ps/history` — recent command history
 
----
+### Filesystem
 
-## Keyboard Shortcuts
+- `GET /api/fs/list?path=...`
+- `GET /api/fs/read?path=...`
+- `POST /api/fs/write` `{ path, content }`
+- `DELETE /api/fs/delete?path=...`
 
-| Key | Action |
-|-----|--------|
-| `F5` | Run current editor content |
-| `Ctrl+Enter` | Run (inside editor) |
-| `Ctrl+S` | Download/export current file |
-| `↑ / ↓` in PS terminal | Command history |
-| `Enter` in dispatch bar | Send to selected agent |
-| `Shift+Enter` | New line in dispatch bar |
-| `Escape` | Close Settings/Wizard modal |
+### Database
 
----
+- `POST /api/db/select`
+- `POST /api/db/query`
+- `GET /api/db/tables`
+- `GET /api/db/schema?table=name`
 
-## WebSocket Events
+### Agents
 
-Events emitted to all connected browsers:
+- `POST /api/agents/dispatch`
+- `GET /api/agents/list`
 
-```
-ps:start     { sessionId, command }
-ps:line      { sessionId, line, stream: 'stdout'|'stderr' }
-ps:done      { sessionId, exitCode }
-ps:timeout   { sessionId }
-ps:killed    { sessionId }
-ps:killall   { count }
-agent:thinking  { agentId, command }
-agent:response  { agentId, parsed, executionResult }
-agent:error     { agentId, error }
-```
+### Config
 
----
+- `GET /api/config`
+- `POST /api/config`
+- `POST /api/config/bulk`
 
-## OpenClaw Integration
+### Sessions
 
-The gateway stack is expected on these ports (started by `start-claude-remote.ps1`):
+- `GET /api/sessions`
+- `GET /api/sessions/:id`
+- `POST /api/sessions`
+- `DELETE /api/sessions/:id`
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| OpenClaw Relay | 4588 | Core relay station |
-| OpenClaw Bridge | 3004 | MCP bridge |
-| DC OAuth | 3001 | Desktop Commander auth |
-| MCP Proxy | 3002 | ngrok-exposed endpoint |
-| Aggregator | 3003 | All-tools aggregator |
-| **EXECUTIONOR** | **3100** | This app |
+### Logs and monitoring
 
----
+- `GET /api/logs/files`
+- `GET /api/logs/stream?path=...&tail=80`
+- `GET /api/monitor/system`
+- `GET /api/monitor/processes`
+- `POST /api/monitor/kill`
 
-## License
-Stay Visual · Stay Free · Stay Opensource · Stay Executionor
+### Ops
+
+- `GET /api/ops/overview`
+- `GET /api/ops/tasks`
+- `POST /api/ops/tasks`
+- `POST /api/ops/tasks/:id/approve`
+- `POST /api/ops/tasks/:id/reject`
+- `POST /api/ops/tasks/:id/run`
+- `GET /api/ops/runbooks`
+- `POST /api/ops/runbooks`
+- `POST /api/ops/runbooks/:id/instantiate`
+- `DELETE /api/ops/runbooks/:id`
+- `GET /api/ops/audit`
+- `GET /api/ops/diagnostics`
+
+## Runtime notes
+
+- The app now adapts core shell, monitor, and log routes to the host runtime instead of assuming Windows-only execution.
+- Some legacy UI copy still reflects the original Windows-first design.
+- Ops filesystem actions are constrained to the workspace root for safety.
+- Approval-gated tasks require fresh approval before rerun.
+
+## Repository goal
+
+Executionor is being built toward a more advanced operator experience than a basic local dashboard: repeatable workflows, tighter governance, better runtime visibility, and fewer context-wasting manual steps.

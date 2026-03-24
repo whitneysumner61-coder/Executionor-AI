@@ -271,11 +271,12 @@ a{color:var(--blu);text-decoration:none}a:hover{text-decoration:underline}
 .ops-ta{font-family:var(--mono);min-height:88px;resize:vertical}
 .ops-inp:focus,.ops-ta:focus,.ops-sel:focus{border-color:var(--ac2)}
 .ops-check{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--t1)}
+.ops-form-actions{display:flex;gap:8px;flex-wrap:wrap}
 .ops-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:9px}
 .ops-stat{background:rgba(255,255,255,.03);border:1px solid var(--bdr);border-radius:var(--r2);padding:10px}
 .ops-stat-val{font-family:var(--mono);font-size:18px;color:var(--t0);font-weight:600}
 .ops-stat-lbl{font-size:10px;color:var(--t3);letter-spacing:.5px;text-transform:uppercase;margin-top:4px}
-.ops-list,.ops-audit,.ops-diag{display:flex;flex-direction:column;gap:9px;padding:12px 14px;overflow:auto}
+.ops-list,.ops-audit,.ops-diag,.ops-runbooks{display:flex;flex-direction:column;gap:9px;padding:12px 14px;overflow:auto}
 .ops-task,.ops-audit-item,.ops-diag-item{border:1px solid var(--bdr);border-radius:var(--r2);background:rgba(255,255,255,.02);padding:10px 11px}
 .ops-task-hdr,.ops-audit-hdr,.ops-diag-hdr{display:flex;align-items:flex-start;gap:8px;justify-content:space-between}
 .ops-task-title,.ops-diag-title{font-size:12px;font-weight:600;color:var(--t0)}
@@ -691,8 +692,15 @@ a{color:var(--blu);text-decoration:none}a:hover{text-decoration:underline}
                 <label for="ops-command">Command / instruction</label>
                 <textarea class="ops-ta" id="ops-command" placeholder="Examples:&#10;status openclaw&#10;list files in routes&#10;SELECT * FROM notes LIMIT 10&#10;create a starter config file"></textarea>
               </div>
+              <div class="ops-form-row">
+                <label for="ops-tags">Runbook tags (optional)</label>
+                <input class="ops-inp" id="ops-tags" placeholder="workspace, diagnostics, deploy">
+              </div>
               <label class="ops-check"><input type="checkbox" id="ops-approval" checked> Require approval before run</label>
-              <button class="btn primary" onclick="createOpsTaskFromForm()">Create Ops Task</button>
+              <div class="ops-form-actions">
+                <button class="btn primary" onclick="createOpsTaskFromForm()">Create Ops Task</button>
+                <button class="btn" onclick="createOpsRunbookFromForm()">Save as Runbook</button>
+              </div>
             </div>
           </div>
 
@@ -707,6 +715,11 @@ a{color:var(--blu);text-decoration:none}a:hover{text-decoration:underline}
           <div class="ops-panel">
             <div class="ops-panel-hdr">Diagnostics</div>
             <div class="ops-diag" id="ops-diag"></div>
+          </div>
+
+          <div class="ops-panel full">
+            <div class="ops-panel-hdr">Runbooks</div>
+            <div class="ops-runbooks" id="ops-runbooks"></div>
           </div>
 
           <div class="ops-panel full">

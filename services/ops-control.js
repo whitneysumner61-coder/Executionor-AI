@@ -8,7 +8,6 @@ import { runPSSync } from '../routes/ps.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATE_DIR = join(__dirname, '..', 'sessions');
 const STATE_PATH = join(STATE_DIR, 'ops-control.json');
-const DEFAULT_STATE = { tasks: [], audit: [], updatedAt: null };
 const WORKSPACE_ROOT_ABS = normalize(resolve(WORKSPACE_ROOT));
 let stateMutationQueue = Promise.resolve();
 
@@ -18,6 +17,121 @@ function now() {
 
 function makeId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createBuiltinRunbooks() {
+  const createdAt = now();
+  return [
+    {
+      id: 'runbook_workspace_inventory',
+      title: 'Workspace inventory',
+      summary: 'Capture the current workspace top-level inventory so operators can orient quickly before making changes.',
+      command: 'list files in the workspace root',
+      targetAgent: 'PHANTOM',
+      requiresApproval: false,
+      tags: ['workspace', 'inventory'],
+      builtin: true,
+      createdBy: 'system',
+      createdAt,
+      updatedAt: createdAt,
+      lastUsedAt: null,
+      previewType: 'fs',
+      risk: 'low'
+    },
+    {
+      id: 'runbook_host_runtime_snapshot',
+      title: 'Host runtime snapshot',
+      summary: 'Collect CPU, memory, and disk information from the current host before troubleshooting or deployments.',
+      command: 'cpu memory disk usage',
+      targetAgent: 'SHELL',
+      requiresApproval: false,
+      tags: ['runtime', 'health'],
+      builtin: true,
+      createdBy: 'system',
+      createdAt,
+      updatedAt: createdAt,
+      lastUsedAt: null,
+      previewType: 'ps',
+      risk: 'critical'
+    },
+    {
+      id: 'runbook_openclaw_status',
+      title: 'OpenClaw bridge status',
+      summary: 'Check whether the OpenClaw relay and bridge are reachable before dispatching remote workflow commands.',
+      command: 'status openclaw',
+      targetAgent: 'CLAW',
+      requiresApproval: false,
+      tags: ['openclaw', 'bridge'],
+      builtin: true,
+      createdBy: 'system',
+      createdAt,
+      updatedAt: createdAt,
+      lastUsedAt: null,
+      previewType: 'claw',
+      risk: 'low'
+    },
+    {
+      id: 'runbook_database_schema_snapshot',
+      title: 'Database schema snapshot',
+      summary: 'Review the public database schema quickly before writing new SQL or changing data flows.',
+      command: "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name LIMIT 25",
+      targetAgent: 'HYDRA',
+      requiresApproval: true,
+      tags: ['database', 'schema'],
+      builtin: true,
+      createdBy: 'system',
+      createdAt,
+      updatedAt: createdAt,
+      lastUsedAt: null,
+      previewType: 'sql',
+      risk: 'medium'
+    }
+  ];
+}
+
+function createDefaultState() {
+  return {
+    tasks: [],
+    audit: [],
+    runbooks: createBuiltinRunbooks(),
+    updatedAt: null
+  };
+}
+
+function sortRunbooks(runbooks) {
+  return [...runbooks].sort((a, b) => {
+    if (Boolean(a.builtin) !== Boolean(b.builtin)) return a.builtin ? -1 : 1;
+    const aTime = a.updatedAt || a.createdAt || '';
+    const bTime = b.updatedAt || b.createdAt || '';
+    return aTime < bTime ? 1 : -1;
+  });
+}
+
+function normalizeTags(tags) {
+  const raw = Array.isArray(tags)
+    ? tags
+    : String(tags || '').split(',');
+  return [...new Set(raw
+    .map((tag) => String(tag || '').trim())
+    .filter(Boolean)
+    .slice(0, 8))];
+}
+
+function mergeRunbooks(savedRunbooks = []) {
+  const builtins = createBuiltinRunbooks();
+  const byId = new Map();
+
+  builtins.forEach((runbook) => byId.set(runbook.id, runbook));
+  (Array.isArray(savedRunbooks) ? savedRunbooks : []).forEach((runbook) => {
+    if (!runbook?.id) return;
+    byId.set(runbook.id, {
+      ...runbook,
+      tags: normalizeTags(runbook.tags),
+      builtin: Boolean(runbook.builtin)
+    });
+  });
+
+  return sortRunbooks([...byId.values()]);
 }
 
 function normalizeTaskStatus(status) {
@@ -31,7 +145,7 @@ async function ensureStateFile() {
   try {
     await stat(STATE_PATH);
   } catch (_) {
-    await writeFile(STATE_PATH, JSON.stringify(DEFAULT_STATE, null, 2), 'utf8');
+    await writeFile(STATE_PATH, JSON.stringify(createDefaultState(), null, 2), 'utf8');
   }
 }
 
@@ -43,10 +157,11 @@ async function readState() {
     return {
       tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
       audit: Array.isArray(parsed.audit) ? parsed.audit : [],
+      runbooks: mergeRunbooks(parsed.runbooks),
       updatedAt: parsed.updatedAt || null
     };
   } catch (_) {
-    return structuredClone(DEFAULT_STATE);
+    return createDefaultState();
   }
 }
 
@@ -352,6 +467,11 @@ async function parseTaskInput(targetAgent, command) {
   return result.parsed;
 }
 
+export async function listOpsRunbooks() {
+  const state = await readState();
+  return sortRunbooks(state.runbooks || []);
+}
+
 export async function listOpsTasks(status) {
   const state = await readState();
   const tasks = sortTasks(state.tasks);
@@ -416,6 +536,100 @@ export async function createOpsTask(input) {
   });
 
   return nextState.tasks.find((entry) => entry.id === task.id);
+}
+
+export async function createOpsRunbook(input) {
+  const command = String(input.command || '').trim();
+  if (!command) throw new Error('Runbook command is required');
+
+  const targetAgent = input.targetAgent || 'AUTO';
+  const parsed = await parseTaskInput(targetAgent, command);
+  if (!parsed) throw new Error('Runbook command must resolve to an executable action');
+
+  const createdAt = now();
+  const runbook = {
+    id: makeId('runbook'),
+    title: safeTitle(input.title),
+    summary: String(input.summary || summarizeAction(parsed)).trim(),
+    command,
+    targetAgent,
+    requiresApproval: input.requiresApproval ?? defaultApprovalRequired(parsed),
+    tags: normalizeTags(input.tags),
+    builtin: false,
+    createdBy: String(input.createdBy || 'operator'),
+    createdAt,
+    updatedAt: createdAt,
+    lastUsedAt: null,
+    previewType: parsed.type || 'unknown',
+    risk: classifyRisk(parsed)
+  };
+
+  const nextState = await mutateState((state) => {
+    state.runbooks = sortRunbooks([runbook, ...(state.runbooks || [])]);
+    addAuditEvent(state, 'runbook.created', {
+      runbookId: runbook.id,
+      title: runbook.title,
+      createdBy: runbook.createdBy
+    });
+    return state;
+  });
+
+  return nextState.runbooks.find((entry) => entry.id === runbook.id);
+}
+
+export async function deleteOpsRunbook(runbookId, deletedBy = 'operator') {
+  let deletedRunbook = null;
+
+  await mutateState((state) => {
+    const runbook = state.runbooks.find((entry) => entry.id === runbookId);
+    if (!runbook) throw new Error('Runbook not found');
+    if (runbook.builtin) throw new Error('Built-in runbooks cannot be deleted');
+
+    state.runbooks = state.runbooks.filter((entry) => entry.id !== runbookId);
+    deletedRunbook = structuredClone(runbook);
+    addAuditEvent(state, 'runbook.deleted', {
+      runbookId,
+      deletedBy
+    });
+    return state;
+  });
+
+  return deletedRunbook;
+}
+
+export async function instantiateOpsRunbook(runbookId, input = {}) {
+  const state = await readState();
+  const runbook = state.runbooks.find((entry) => entry.id === runbookId);
+  if (!runbook) throw new Error('Runbook not found');
+
+  const task = await createOpsTask({
+    title: input.title || runbook.title,
+    summary: input.summary || runbook.summary,
+    command: input.command || runbook.command,
+    targetAgent: input.targetAgent || runbook.targetAgent,
+    requestedBy: input.requestedBy || 'operator',
+    requiresApproval: typeof input.requiresApproval === 'boolean' ? input.requiresApproval : runbook.requiresApproval,
+    metadata: {
+      ...(input.metadata && typeof input.metadata === 'object' ? input.metadata : {}),
+      runbookId: runbook.id,
+      runbookTitle: runbook.title
+    }
+  });
+
+  await mutateState((nextState) => {
+    const target = nextState.runbooks.find((entry) => entry.id === runbookId);
+    if (!target) return nextState;
+    target.lastUsedAt = now();
+    target.updatedAt = target.lastUsedAt;
+    addAuditEvent(nextState, 'runbook.instantiated', {
+      runbookId,
+      taskId: task.id,
+      requestedBy: input.requestedBy || 'operator'
+    });
+    return nextState;
+  });
+
+  return task;
 }
 
 export async function decideOpsTask(taskId, decision, reviewer, note = '') {
@@ -527,6 +741,7 @@ export async function collectOpsDiagnostics() {
   const pkgPath = join(__dirname, '..', 'package.json');
   const readmePath = join(__dirname, '..', 'README.md');
   const gitConfigPath = join(__dirname, '..', '.git', 'config');
+  const state = await readState();
 
   const pkg = JSON.parse(await readFile(pkgPath, 'utf8'));
   const readme = await readFile(readmePath, 'utf8').catch(() => '');
@@ -595,10 +810,17 @@ export async function collectOpsDiagnostics() {
   });
 
   checks.push({
+    id: 'runbooks',
+    label: 'Ops runbook library',
+    status: (state.runbooks || []).length ? 'ok' : 'warn',
+    detail: `${(state.runbooks || []).length} reusable runbook${(state.runbooks || []).length === 1 ? '' : 's'} available to operators.`
+  });
+
+  checks.push({
     id: 'docs',
     label: 'README parity',
-    status: readme.includes('/api/ops') && readme.includes('/api/logs') && readme.includes('/api/monitor') ? 'ok' : 'warn',
-    detail: 'The README does not fully reflect the current routes and advanced control-plane features.'
+    status: readme.includes('/api/ops/runbooks') && readme.includes('/api/logs') && readme.includes('/api/monitor') ? 'ok' : 'warn',
+    detail: 'README coverage should reflect the current routes, runbooks, and control-plane features.'
   });
 
   checks.push({
@@ -625,11 +847,13 @@ export async function collectOpsDiagnostics() {
 export async function getOpsOverview() {
   const state = await readState();
   const tasks = sortTasks(state.tasks);
+  const runbooks = sortRunbooks(state.runbooks || []);
   const diagnostics = await collectOpsDiagnostics();
   const counts = taskCounts(tasks);
   return {
-    counts,
+    counts: { ...counts, runbooks: runbooks.length },
     tasks: tasks.slice(0, 25),
+    runbooks: runbooks.slice(0, 25),
     audit: state.audit.slice(0, 25),
     diagnostics,
     diagnosticsSummary: diagnostics.reduce((acc, check) => {
