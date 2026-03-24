@@ -64,6 +64,7 @@ It supports:
 - task creation from natural-language instructions
 - approval-gated execution for non-low-risk actions
 - audit trails for creation, approval, rejection, execution, and failures
+- per-task review packets that show parsed action details, policy approval reasons, full result output, and task-specific audit history
 - diagnostics for runtime, docs parity, MCP installs, OpenClaw reachability, and git state
 - reusable runbooks that can be loaded into the form or queued directly as new tasks
 - persistent governance policies that control which task types, filesystem operations, OpenClaw actions, and compose actions are blocked
@@ -158,6 +159,8 @@ npm run skill:new -- <skill-name> --force
 
 - `GET /api/ops/overview`
 - `GET /api/ops/tasks`
+- `GET /api/ops/tasks/:id`
+- `GET /api/ops/tasks/:id/audit`
 - `POST /api/ops/tasks`
 - `POST /api/ops/tasks/:id/approve`
 - `POST /api/ops/tasks/:id/reject`

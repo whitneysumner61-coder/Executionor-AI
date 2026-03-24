@@ -7,10 +7,12 @@ import {
   deleteOpsRunbook,
   decideOpsTask,
   getOpsPolicies,
+  getOpsTask,
   getOpsOverview,
   instantiateOpsRunbook,
   listOpsAudit,
   listOpsRunbooks,
+  listOpsTaskAudit,
   listOpsTasks,
   runOpsTask,
   updateOpsPolicies
@@ -40,6 +42,23 @@ router.get('/tasks', async (req, res) => {
     res.json({ tasks: await listOpsTasks(req.query.status) });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/tasks/:id', async (req, res) => {
+  try {
+    res.json(await getOpsTask(req.params.id));
+  } catch (error) {
+    res.status(404).json({ error: error.message });
+  }
+});
+
+router.get('/tasks/:id/audit', async (req, res) => {
+  try {
+    const limit = Number.parseInt(req.query.limit || '20', 10);
+    res.json({ audit: await listOpsTaskAudit(req.params.id, Number.isNaN(limit) ? 20 : limit) });
+  } catch (error) {
+    res.status(404).json({ error: error.message });
   }
 });
 

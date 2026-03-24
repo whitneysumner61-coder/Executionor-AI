@@ -39,6 +39,9 @@ const state = {
   opsStacks: [],
   opsStackPreview: {},
   opsPolicies: {},
+  lastOpsTasks: [],
+  opsTaskReview: null,
+  opsTaskAudit: [],
   savedSessions: [],
   paletteMode: 'commands',
   paletteItems: [],
@@ -1092,6 +1095,7 @@ async function loadOpsDashboard() {
     state.opsRunbooks = runbookData.runbooks || overview.runbooks || [];
     state.opsStacks = stackData.stacks || overview.stacks || [];
     state.opsPolicies = policyData || overview.policies || {};
+    state.lastOpsTasks = taskData.tasks || [];
     renderOpsStats(overview.counts, overview.diagnosticsSummary);
     renderOpsTasks(taskData.tasks || []);
     renderOpsStacks(state.opsStacks);
@@ -1166,8 +1170,11 @@ function renderOpsTasks(tasks = []) {
         ${task.parsed ? `<div class="ops-inline-note" style="margin-top:8px">Parsed as ${esc(task.parsed.type || 'unknown')} via ${esc(task.parsed.agentId || task.targetAgent || 'AUTO')}.</div>` : '<div class="ops-inline-note" style="margin-top:8px">No executable command was captured, so this task is stored as planning context only.</div>'}
         ${task.metadata?.runbookTitle ? `<div class="ops-inline-note" style="margin-top:6px">Created from runbook: ${esc(task.metadata.runbookTitle)}</div>` : ''}
         ${task.decision ? `<div class="ops-inline-note" style="margin-top:6px">Decision: ${esc(task.decision.decision)} by ${esc(task.decision.by || 'operator')}${task.decision.note ? ` — ${esc(task.decision.note)}` : ''}</div>` : ''}
+        ${task.review?.approvalReasons?.length ? `<div class="ops-inline-note" style="margin-top:6px">Approval reasons: ${esc(task.review.approvalReasons.join(' | '))}</div>` : ''}
         ${resultPreview ? `<div class="ops-task-code">${esc(resultPreview)}</div>` : ''}
         <div class="ops-actions">
+          <button class="btn sm" onclick="openOpsTaskReview('${escapeJs(task.id)}')">Review</button>
+          <button class="btn sm" onclick="loadOpsTaskIntoForm('${escapeJs(task.id)}')">Reuse</button>
           ${task.requiresApproval && ['pending_approval', 'completed', 'failed'].includes(task.status) ? `<button class="btn sm" onclick="approveOpsTask('${escapeJs(task.id)}')">${task.status === 'pending_approval' ? 'Approve' : 'Approve Again'}</button><button class="btn sm danger" onclick="rejectOpsTask('${escapeJs(task.id)}')">Reject</button>` : ''}
           ${task.executable && (task.status === 'approved' || (!task.requiresApproval && !['running', 'rejected'].includes(task.status))) ? `<button class="btn sm primary" onclick="runOpsTaskAction('${escapeJs(task.id)}')">${task.lastRun ? 'Run Again' : 'Run'}</button>` : ''}
         </div>
@@ -1390,6 +1397,7 @@ async function approveOpsTask(taskId) {
     await POST(`/ops/tasks/${encodeURIComponent(taskId)}/approve`, { reviewedBy, note });
     toast('Task approved', 'ok');
     await loadOpsDashboard();
+    if (state.opsTaskReview?.id === taskId) await openOpsTaskReview(taskId);
   } catch (error) {
     toast(error.message, 'err');
   }
@@ -1402,6 +1410,7 @@ async function rejectOpsTask(taskId) {
     await POST(`/ops/tasks/${encodeURIComponent(taskId)}/reject`, { reviewedBy, note });
     toast('Task rejected', 'ok');
     await loadOpsDashboard();
+    if (state.opsTaskReview?.id === taskId) await openOpsTaskReview(taskId);
   } catch (error) {
     toast(error.message, 'err');
   }
@@ -1416,6 +1425,7 @@ async function runOpsTaskAction(taskId) {
     toast(error.message, 'err');
   }
   await loadOpsDashboard();
+  if (state.opsTaskReview?.id === taskId) await openOpsTaskReview(taskId);
 }
 
 function applyOpsRunbook(runbookId) {
@@ -1432,6 +1442,128 @@ function applyOpsRunbook(runbookId) {
   document.getElementById('ops-approval').checked = Boolean(runbook.requiresApproval);
   document.getElementById('ops-tags').value = Array.isArray(runbook.tags) ? runbook.tags.join(', ') : '';
   toast(`Loaded runbook: ${runbook.title}`, 'ok');
+}
+
+function loadOpsTaskIntoForm(taskId) {
+  const task = (state.opsTaskReview?.id === taskId ? state.opsTaskReview : null)
+    || (state.lastOpsTasks || []).find((entry) => entry.id === taskId);
+  if (!task) {
+    toast('Task not found', 'err');
+    return;
+  }
+
+  document.getElementById('ops-title').value = task.title || '';
+  document.getElementById('ops-summary').value = task.summary || '';
+  document.getElementById('ops-command').value = task.command || '';
+  document.getElementById('ops-agent').value = task.targetAgent || 'AUTO';
+  document.getElementById('ops-approval').checked = Boolean(task.requiresApproval);
+  toast(`Loaded task: ${task.title}`, 'ok');
+}
+
+async function openOpsTaskReview(taskId) {
+  try {
+    const [task, audit] = await Promise.all([
+      GET(`/ops/tasks/${encodeURIComponent(taskId)}`),
+      GET(`/ops/tasks/${encodeURIComponent(taskId)}/audit?limit=20`)
+    ]);
+    state.opsTaskReview = task;
+    state.opsTaskAudit = audit.audit || [];
+    renderOpsTaskReview();
+    document.getElementById('ops-task-modal').classList.remove('hidden');
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
+function closeOpsTaskReview() {
+  document.getElementById('ops-task-modal').classList.add('hidden');
+}
+
+function renderOpsTaskReview() {
+  const root = document.getElementById('ops-task-review');
+  if (!root) return;
+  const task = state.opsTaskReview;
+  if (!task) {
+    root.innerHTML = '<div class="ops-empty">No task selected.</div>';
+    return;
+  }
+
+  const resultText = task.lastRun?.error
+    ? `Error: ${task.lastRun.error}`
+    : task.lastRun?.result
+      ? JSON.stringify(task.lastRun.result, null, 2)
+      : 'No execution result yet.';
+
+  root.innerHTML = `
+    <div class="ops-review-grid">
+      <div class="ops-task">
+        <div class="ops-task-hdr">
+          <div>
+            <div class="ops-task-title">${esc(task.title)}</div>
+            <div class="ops-task-meta">
+              ${opsBadge(task.status, taskStatusTone(task.status))}
+              ${opsBadge(task.risk || 'medium', taskRiskTone(task.risk))}
+              ${opsBadge(task.targetAgent || 'AUTO', 'info')}
+              ${task.executable ? (task.requiresApproval ? opsBadge('approval', 'warn') : opsBadge('auto', 'ok')) : opsBadge('plan-only', 'info')}
+            </div>
+          </div>
+          <div class="ops-inline-note">${esc(fmtDateTime(task.updatedAt || task.createdAt))}</div>
+        </div>
+        <div class="ops-task-summary">${esc(task.summary || '')}</div>
+        ${task.command ? `<div class="ops-task-code">${esc(task.command)}</div>` : ''}
+        <div class="ops-inline-note" style="margin-top:8px">Requested by ${esc(task.requestedBy || 'operator')} · Created ${esc(fmtDateTime(task.createdAt))}</div>
+        ${task.decision ? `<div class="ops-inline-note" style="margin-top:6px">Decision: ${esc(task.decision.decision)} by ${esc(task.decision.by || 'operator')}${task.decision.note ? ` — ${esc(task.decision.note)}` : ''}</div>` : ''}
+        <div class="ops-actions">
+          <button class="btn sm" onclick="loadOpsTaskIntoForm('${escapeJs(task.id)}')">Load Into Form</button>
+          <button class="btn sm" onclick="copyOpsTaskResult()">Copy Result</button>
+          ${task.requiresApproval && ['pending_approval', 'completed', 'failed'].includes(task.status) ? `<button class="btn sm" onclick="approveOpsTask('${escapeJs(task.id)}')">Approve</button><button class="btn sm danger" onclick="rejectOpsTask('${escapeJs(task.id)}')">Reject</button>` : ''}
+          ${task.executable && (task.status === 'approved' || (!task.requiresApproval && !['running', 'rejected'].includes(task.status))) ? `<button class="btn sm primary" onclick="runOpsTaskAction('${escapeJs(task.id)}')">${task.lastRun ? 'Run Again' : 'Run'}</button>` : ''}
+        </div>
+      </div>
+      <div class="ops-task">
+        <div class="ops-task-title">Review context</div>
+        <div class="ops-task-summary">${esc(task.review?.summary || 'No review summary available.')}</div>
+        <div class="ops-inline-note" style="margin-top:8px">Policy profile: ${esc(task.review?.profile || state.opsPolicies.profile || 'balanced')}</div>
+        ${(task.review?.approvalReasons || []).length ? `<div class="ops-task-code">${esc((task.review.approvalReasons || []).join('\n'))}</div>` : '<div class="ops-inline-note" style="margin-top:8px">No explicit approval reasons recorded.</div>'}
+        <div class="ops-inline-note" style="margin-top:8px">Parsed action</div>
+        <div class="ops-task-code">${esc(JSON.stringify(task.parsed || {}, null, 2))}</div>
+      </div>
+      <div class="ops-task full-span">
+        <div class="ops-task-title">Execution result</div>
+        <div class="ops-inline-note" style="margin-top:6px">Started ${esc(fmtDateTime(task.lastRun?.startedAt))} · Finished ${esc(fmtDateTime(task.lastRun?.finishedAt))}</div>
+        <div class="ops-task-code ops-task-code-lg">${esc(resultText)}</div>
+      </div>
+      <div class="ops-task full-span">
+        <div class="ops-task-title">Task audit timeline</div>
+        ${(state.opsTaskAudit || []).length ? state.opsTaskAudit.map((entry) => `
+          <div class="ops-audit-item" style="margin-top:8px">
+            <div class="ops-audit-hdr">
+              <div class="ops-diag-title">${esc(entry.type)}</div>
+              <div class="ops-inline-note">${esc(fmtDateTime(entry.createdAt))}</div>
+            </div>
+            <div class="ops-audit-detail">${esc(JSON.stringify(entry.detail || {}, null, 2))}</div>
+          </div>
+        `).join('') : '<div class="ops-inline-note" style="margin-top:8px">No task audit events captured yet.</div>'}
+      </div>
+    </div>
+  `;
+}
+
+async function copyOpsTaskResult() {
+  const task = state.opsTaskReview;
+  if (!task?.lastRun) {
+    toast('No task result available yet', 'info');
+    return;
+  }
+  const text = task.lastRun.error
+    ? `Error: ${task.lastRun.error}`
+    : JSON.stringify(task.lastRun.result || {}, null, 2);
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Task result copied', 'ok');
+  } catch (_) {
+    toast('Clipboard copy failed', 'err');
+  }
 }
 
 async function queueOpsRunbook(runbookId) {

@@ -308,7 +308,7 @@ function defaultApprovalRequired(parsed) {
 
 function evaluatePolicies(parsed, policies) {
   if (!parsed) {
-    return { requiresApproval: false };
+    return { requiresApproval: false, reasons: [] };
   }
 
   if (policies.blockedTaskTypes.includes(parsed.type)) {
@@ -327,8 +327,29 @@ function evaluatePolicies(parsed, policies) {
     throw new Error(`Policy blocks compose action: ${parsed.action}.`);
   }
 
+  const reasons = [];
+  if (defaultApprovalRequired(parsed)) {
+    reasons.push(`Risk level ${classifyRisk(parsed)} defaults to approval.`);
+  }
+  if (policies.requireApprovalForTypes.includes(parsed.type)) {
+    reasons.push(`Policy profile "${policies.profile}" requires approval for ${parsed.type} tasks.`);
+  }
+
   return {
-    requiresApproval: defaultApprovalRequired(parsed) || policies.requireApprovalForTypes.includes(parsed.type)
+    requiresApproval: reasons.length > 0,
+    reasons
+  };
+}
+
+function buildTaskReviewContext(parsed, policies, policyDecision) {
+  return {
+    summary: summarizeAction(parsed),
+    profile: policies.profile,
+    approvalReasons: policyDecision.reasons || [],
+    blockedTaskTypes: policies.blockedTaskTypes,
+    blockedFsOperations: policies.blockedFsOperations,
+    blockedClawActions: policies.blockedClawActions,
+    blockedComposeActions: policies.blockedComposeActions
   };
 }
 
@@ -588,9 +609,25 @@ export async function listOpsTasks(status) {
   return status ? tasks.filter((task) => task.status === status) : tasks;
 }
 
+export async function getOpsTask(taskId) {
+  const state = await readState();
+  const task = state.tasks.find((entry) => entry.id === taskId);
+  if (!task) throw new Error('Task not found');
+  return task;
+}
+
 export async function listOpsAudit(limit = 40) {
   const state = await readState();
   return state.audit.slice(0, limit);
+}
+
+export async function listOpsTaskAudit(taskId, limit = 40) {
+  const state = await readState();
+  const task = state.tasks.find((entry) => entry.id === taskId);
+  if (!task) throw new Error('Task not found');
+  return state.audit
+    .filter((entry) => entry.detail?.taskId === taskId)
+    .slice(0, limit);
 }
 
 export async function createOpsTask(input) {
@@ -616,6 +653,7 @@ export async function createOpsTask(input) {
     requiresApproval,
     executable,
     parsed,
+    review: buildTaskReviewContext(parsed, policies, policyDecision),
     metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
     createdAt,
     updatedAt: createdAt,
@@ -814,6 +852,7 @@ export async function runOpsTask(taskId, requestedBy = 'operator') {
     if (!task.executable) throw new Error('This task is planning-only and cannot be run');
     const policyDecision = evaluatePolicies(task.parsed, policies);
     if (policyDecision.requiresApproval) task.requiresApproval = true;
+    task.review = buildTaskReviewContext(task.parsed, policies, policyDecision);
     if (task.requiresApproval && task.status !== 'approved') {
       task.status = 'pending_approval';
       task.updatedAt = now();
