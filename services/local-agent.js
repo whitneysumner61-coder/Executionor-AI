@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'fs/promises';
 import { basename, extname, isAbsolute, join, normalize } from 'path';
+import { IS_WINDOWS, SHELL_LABEL } from './host-runtime.js';
 
 export const WORKSPACE_ROOT = process.cwd();
 const DEFAULT_BROWSE_ROOT = WORKSPACE_ROOT;
@@ -9,8 +10,8 @@ export const LOCAL_AGENTS = {
   SHELL: {
     id: 'SHELL',
     name: 'Shell',
-    role: 'Real PowerShell Executor',
-    description: 'Runs real PowerShell commands against the local machine.'
+    role: `Real ${SHELL_LABEL} Executor`,
+    description: `Runs real ${SHELL_LABEL} commands against the local machine.`
   },
   PHANTOM: {
     id: 'PHANTOM',
@@ -54,6 +55,9 @@ function extractWindowsPath(command = '') {
 
   const absolute = command.match(/[A-Za-z]:\\[^"'`\r\n]+/);
   if (absolute) return absolute[0].trim();
+
+   const unixAbsolute = command.match(/(?:^|[\s(])(~\/[^\s"'`]+|\/[^\s"'`)]+)/);
+   if (unixAbsolute) return unixAbsolute[1].trim();
 
   const relative = command.match(/(?:\.{1,2}[\\/][^\s"'`]+|[\w .-]+[\\/][^\s"'`]+|[\w.-]+\.(?:ps1|psm1|js|mjs|cjs|json|md|txt|sql|py|html|css))/i);
   return relative?.[0]?.trim() || '';
@@ -102,38 +106,46 @@ function buildShellAction(command) {
     return {
       type: 'ps',
       command: trimmed,
-      explanation: 'Running the PowerShell you entered directly on this machine.'
+      explanation: `Running the ${SHELL_LABEL} you entered directly on this machine.`
     };
   }
 
   if (/\b(current dir|current directory|where am i|pwd)\b/.test(lower)) {
-    return { type: 'ps', command: 'Get-Location', explanation: 'Showing the current working directory.' };
+    return { type: 'ps', command: IS_WINDOWS ? 'Get-Location' : 'pwd', explanation: 'Showing the current working directory.' };
   }
   if (/\b(list|show|browse).*\b(files|folders|directory|tree)\b/.test(lower)) {
     return {
       type: 'ps',
-      command: `Get-ChildItem -Force '${escapePS(path)}' | Sort-Object PSIsContainer -Descending, Name | Format-Table Mode,LastWriteTime,Length,Name -AutoSize`,
+      command: IS_WINDOWS
+        ? `Get-ChildItem -Force '${escapePS(path)}' | Sort-Object PSIsContainer -Descending, Name | Format-Table Mode,LastWriteTime,Length,Name -AutoSize`
+        : `ls -la '${escapePS(path)}'`,
       explanation: `Listing real files from ${path}.`
     };
   }
   if (/\b(processes|running processes|tasks)\b/.test(lower)) {
     return {
       type: 'ps',
-      command: "Get-Process | Sort-Object CPU -Descending | Select-Object -First 25 Name,Id,@{N='CPU';E={[math]::Round($_.CPU,1)}},@{N='RAM_MB';E={[math]::Round($_.WorkingSet/1MB,1)}} | Format-Table -AutoSize",
-      explanation: 'Showing the live process list from Windows.'
+      command: IS_WINDOWS
+        ? "Get-Process | Sort-Object CPU -Descending | Select-Object -First 25 Name,Id,@{N='CPU';E={[math]::Round($_.CPU,1)}},@{N='RAM_MB';E={[math]::Round($_.WorkingSet/1MB,1)}} | Format-Table -AutoSize"
+        : "ps -eo pid,comm,%cpu,rss --sort=-%cpu | head -n 25",
+      explanation: 'Showing the live process list from the host machine.'
     };
   }
   if (/\b(ports|listening ports|open ports|tcp)\b/.test(lower)) {
     return {
       type: 'ps',
-      command: 'Get-NetTCPConnection -State Listen | Sort-Object LocalPort | Format-Table LocalAddress,LocalPort,OwningProcess,State -AutoSize',
+      command: IS_WINDOWS
+        ? 'Get-NetTCPConnection -State Listen | Sort-Object LocalPort | Format-Table LocalAddress,LocalPort,OwningProcess,State -AutoSize'
+        : 'lsof -iTCP -sTCP:LISTEN -n -P',
       explanation: 'Showing live listening ports from the host machine.'
     };
   }
   if (/\b(cpu|memory|ram|system info|disk usage)\b/.test(lower)) {
     return {
       type: 'ps',
-      command: "$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average; $os = Get-CimInstance Win32_OperatingSystem; $drives = Get-PSDrive -PSProvider FileSystem | Select-Object Name,@{N='UsedGB';E={[math]::Round($_.Used/1GB,1)}},@{N='FreeGB';E={[math]::Round($_.Free/1GB,1)}}; Write-Host ('CPU: ' + $cpu + '%'); Write-Host ('RAM Used: ' + [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory)/1MB),2) + ' GB'); $drives | Format-Table -AutoSize",
+      command: IS_WINDOWS
+        ? "$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average; $os = Get-CimInstance Win32_OperatingSystem; $drives = Get-PSDrive -PSProvider FileSystem | Select-Object Name,@{N='UsedGB';E={[math]::Round($_.Used/1GB,1)}},@{N='FreeGB';E={[math]::Round($_.Free/1GB,1)}}; Write-Host ('CPU: ' + $cpu + '%'); Write-Host ('RAM Used: ' + [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory)/1MB),2) + ' GB'); $drives | Format-Table -AutoSize"
+        : "printf 'Load average: '; uptime | awk -F'load average: ' '{print $2}' && printf '\\nRAM:\\n' && free -h && printf '\\nDisk:\\n' && df -h /",
       explanation: 'Gathering live CPU, RAM, and disk information.'
     };
   }
@@ -153,15 +165,15 @@ function buildShellAction(command) {
   if (/\bopen\b/.test(lower) && extractWindowsPath(trimmed)) {
     return {
       type: 'ps',
-      command: `Invoke-Item '${escapePS(path)}'`,
-      explanation: `Opening ${path} with the default Windows handler.`
+      command: IS_WINDOWS ? `Invoke-Item '${escapePS(path)}'` : `xdg-open '${escapePS(path)}'`,
+      explanation: `Opening ${path} with the default host handler.`
     };
   }
 
   return {
     type: 'ps',
     command: trimmed,
-    explanation: 'Passing your input straight to PowerShell because it already looks executable.'
+    explanation: `Passing your input straight to ${SHELL_LABEL} because it already looks executable.`
   };
 }
 

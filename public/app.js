@@ -79,7 +79,8 @@ async function boot() {
     browseDir(state.workspaceRoot),
     loadTables(),
     loadSessionList(),
-    loadLogFiles()
+    loadLogFiles(),
+    loadOpsDashboard()
   ]);
 
   setAgent('SHELL');
@@ -273,6 +274,9 @@ function onWS(message) {
         renderSidebar();
       }
       break;
+    case 'ops:update':
+      if (state.activeView === 'ops') loadOpsDashboard();
+      break;
     default:
       break;
   }
@@ -326,6 +330,7 @@ function sv(view, button) {
   if (button) button.classList.add('active');
   if (view === 'logs') startLogStream();
   if (view === 'monitor') refreshMonitor();
+  if (view === 'ops') loadOpsDashboard();
 }
 
 function renderEditorTabs() {
@@ -960,8 +965,9 @@ async function refreshMonitor() {
     document.getElementById('sys-cpu').textContent = `${Math.round(system.cpu_pct || 0)}%`;
     document.getElementById('sys-ram').textContent = `${system.ram_used_gb || 0} GB`;
     document.getElementById('sys-ramf').textContent = `${system.ram_free_gb || 0} GB`;
-    const diskC = (system.disks || []).find((disk) => disk.Name === 'C');
-    document.querySelector('#sys-disk-c .sysc-val').textContent = diskC ? `${diskC.Free_GB} GB` : '—';
+    const preferredDisk = (system.disks || []).find((disk) => disk.Name === 'C') || (system.disks || [])[0];
+    document.querySelector('#sys-disk-c .sysc-val').textContent = preferredDisk ? `${preferredDisk.Free_GB} GB` : '—';
+    document.querySelector('#sys-disk-c .sysc-lbl').textContent = preferredDisk ? `${preferredDisk.Name}: Free` : 'Disk Free';
     document.getElementById('mon-ts').textContent = `updated ${new Date().toLocaleTimeString()}`;
 
     document.getElementById('proc-body').innerHTML = (processes.processes || []).map((proc) => {
@@ -1056,6 +1062,225 @@ function startLogStream() {
   state.logStream.onerror = () => {
     document.getElementById('log-status').textContent = 'offline';
   };
+}
+
+async function loadOpsDashboard() {
+  const tasksRoot = document.getElementById('ops-tasks');
+  const diagRoot = document.getElementById('ops-diag');
+  const auditRoot = document.getElementById('ops-audit');
+  const statsRoot = document.getElementById('ops-stats');
+  if (!tasksRoot || !diagRoot || !auditRoot || !statsRoot) return;
+
+  try {
+    const filter = document.getElementById('ops-filter')?.value || '';
+    const [overview, taskData] = await Promise.all([
+      GET('/ops/overview'),
+      GET(`/ops/tasks${filter ? `?status=${encodeURIComponent(filter)}` : ''}`)
+    ]);
+
+    renderOpsStats(overview.counts, overview.diagnosticsSummary);
+    renderOpsTasks(taskData.tasks || []);
+    renderOpsDiagnostics(overview.diagnostics || []);
+    renderOpsAudit(overview.audit || []);
+    document.getElementById('ops-sync').textContent = `updated ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    statsRoot.innerHTML = '';
+    tasksRoot.innerHTML = `<div class="ops-empty" style="color:var(--red)">${esc(error.message)}</div>`;
+    diagRoot.innerHTML = '';
+    auditRoot.innerHTML = '';
+  }
+}
+
+function renderOpsStats(counts = {}, diagnosticsSummary = {}) {
+  const stats = [
+    ['Total', counts.total || 0],
+    ['Pending', counts.pending_approval || 0],
+    ['Approved', counts.approved || 0],
+    ['Running', counts.running || 0],
+    ['Completed', counts.completed || 0],
+    ['Failed', counts.failed || 0],
+    ['Diag OK', diagnosticsSummary.ok || 0],
+    ['Diag Warn', diagnosticsSummary.warn || 0]
+  ];
+
+  document.getElementById('ops-stats').innerHTML = stats.map(([label, value]) => `
+    <div class="ops-stat">
+      <div class="ops-stat-val">${esc(String(value))}</div>
+      <div class="ops-stat-lbl">${esc(label)}</div>
+    </div>
+  `).join('');
+}
+
+function renderOpsTasks(tasks = []) {
+  const root = document.getElementById('ops-tasks');
+  if (!tasks.length) {
+    root.innerHTML = '<div class="ops-empty">No ops tasks yet.</div>';
+    return;
+  }
+
+  root.innerHTML = tasks.map((task) => {
+    const resultPreview = task.lastRun?.error
+      ? `Error: ${task.lastRun.error}`
+      : task.lastRun?.result
+        ? JSON.stringify(task.lastRun.result, null, 2).slice(0, 1200)
+        : '';
+    return `
+      <div class="ops-task">
+        <div class="ops-task-hdr">
+          <div>
+            <div class="ops-task-title">${esc(task.title)}</div>
+            <div class="ops-task-meta">
+              ${opsBadge(task.status, taskStatusTone(task.status))}
+              ${opsBadge(task.risk || 'medium', taskRiskTone(task.risk))}
+              ${opsBadge(task.targetAgent || 'AUTO', 'info')}
+              ${task.executable ? (task.requiresApproval ? opsBadge('approval', 'warn') : opsBadge('auto', 'ok')) : opsBadge('plan-only', 'info')}
+            </div>
+          </div>
+          <div class="ops-inline-note">${esc(fmtDateTime(task.updatedAt || task.createdAt))}</div>
+        </div>
+        <div class="ops-task-summary">${esc(task.summary || '')}</div>
+        ${task.command ? `<div class="ops-task-code">${esc(task.command)}</div>` : ''}
+        ${task.parsed ? `<div class="ops-inline-note" style="margin-top:8px">Parsed as ${esc(task.parsed.type || 'unknown')} via ${esc(task.parsed.agentId || task.targetAgent || 'AUTO')}.</div>` : '<div class="ops-inline-note" style="margin-top:8px">No executable command was captured, so this task is stored as planning context only.</div>'}
+        ${task.decision ? `<div class="ops-inline-note" style="margin-top:6px">Decision: ${esc(task.decision.decision)} by ${esc(task.decision.by || 'operator')}${task.decision.note ? ` — ${esc(task.decision.note)}` : ''}</div>` : ''}
+        ${resultPreview ? `<div class="ops-task-code">${esc(resultPreview)}</div>` : ''}
+        <div class="ops-actions">
+          ${task.requiresApproval && ['pending_approval', 'completed', 'failed'].includes(task.status) ? `<button class="btn sm" onclick="approveOpsTask('${escapeJs(task.id)}')">${task.status === 'pending_approval' ? 'Approve' : 'Approve Again'}</button><button class="btn sm danger" onclick="rejectOpsTask('${escapeJs(task.id)}')">Reject</button>` : ''}
+          ${task.executable && (task.status === 'approved' || (!task.requiresApproval && !['running', 'rejected'].includes(task.status))) ? `<button class="btn sm primary" onclick="runOpsTaskAction('${escapeJs(task.id)}')">${task.lastRun ? 'Run Again' : 'Run'}</button>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderOpsDiagnostics(checks = []) {
+  const root = document.getElementById('ops-diag');
+  if (!checks.length) {
+    root.innerHTML = '<div class="ops-empty">No diagnostics available.</div>';
+    return;
+  }
+
+  root.innerHTML = checks.map((check) => `
+    <div class="ops-diag-item">
+      <div class="ops-diag-hdr">
+        <div class="ops-diag-title">${esc(check.label)}</div>
+        ${opsBadge(check.status || 'warn', diagTone(check.status))}
+      </div>
+      <div class="ops-diag-detail">${esc(check.detail || '')}</div>
+    </div>
+  `).join('');
+}
+
+function renderOpsAudit(audit = []) {
+  const root = document.getElementById('ops-audit');
+  if (!audit.length) {
+    root.innerHTML = '<div class="ops-empty">No audit events yet.</div>';
+    return;
+  }
+
+  root.innerHTML = audit.map((entry) => `
+    <div class="ops-audit-item">
+      <div class="ops-audit-hdr">
+        <div class="ops-diag-title">${esc(entry.type)}</div>
+        <div class="ops-inline-note">${esc(fmtDateTime(entry.createdAt))}</div>
+      </div>
+      <div class="ops-audit-detail">${esc(JSON.stringify(entry.detail || {}, null, 2))}</div>
+    </div>
+  `).join('');
+}
+
+async function createOpsTaskFromForm() {
+  const title = document.getElementById('ops-title').value.trim();
+  const summary = document.getElementById('ops-summary').value.trim();
+  const command = document.getElementById('ops-command').value.trim();
+  const targetAgent = document.getElementById('ops-agent').value;
+  const requestedBy = document.getElementById('ops-requested-by').value.trim() || 'operator';
+  const requiresApproval = document.getElementById('ops-approval').checked;
+
+  if (!title) {
+    toast('Ops task title is required', 'info');
+    return;
+  }
+  if (!summary && !command) {
+    toast('Add a summary or command for the ops task', 'info');
+    return;
+  }
+
+  try {
+    await POST('/ops/tasks', { title, summary, command, targetAgent, requestedBy, requiresApproval });
+    document.getElementById('ops-title').value = '';
+    document.getElementById('ops-summary').value = '';
+    document.getElementById('ops-command').value = '';
+    document.getElementById('ops-approval').checked = true;
+    toast('Ops task created', 'ok');
+    await loadOpsDashboard();
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
+async function approveOpsTask(taskId) {
+  const reviewedBy = document.getElementById('ops-requested-by').value.trim() || 'operator';
+  const note = prompt('Approval note (optional)', '') ?? '';
+  try {
+    await POST(`/ops/tasks/${encodeURIComponent(taskId)}/approve`, { reviewedBy, note });
+    toast('Task approved', 'ok');
+    await loadOpsDashboard();
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
+async function rejectOpsTask(taskId) {
+  const reviewedBy = document.getElementById('ops-requested-by').value.trim() || 'operator';
+  const note = prompt('Rejection reason', '') ?? '';
+  try {
+    await POST(`/ops/tasks/${encodeURIComponent(taskId)}/reject`, { reviewedBy, note });
+    toast('Task rejected', 'ok');
+    await loadOpsDashboard();
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+}
+
+async function runOpsTaskAction(taskId) {
+  const requestedBy = document.getElementById('ops-requested-by').value.trim() || 'operator';
+  try {
+    await POST(`/ops/tasks/${encodeURIComponent(taskId)}/run`, { requestedBy });
+    toast('Task run completed', 'ok');
+  } catch (error) {
+    toast(error.message, 'err');
+  }
+  await loadOpsDashboard();
+}
+
+function opsBadge(label, tone) {
+  return `<span class="ops-badge ${tone}">${esc(label)}</span>`;
+}
+
+function taskStatusTone(status) {
+  if (status === 'completed' || status === 'approved') return 'ok';
+  if (status === 'pending_approval' || status === 'running') return 'warn';
+  if (status === 'failed' || status === 'rejected') return 'err';
+  return 'info';
+}
+
+function taskRiskTone(risk) {
+  if (risk === 'low') return 'ok';
+  if (risk === 'medium') return 'warn';
+  return 'err';
+}
+
+function diagTone(status) {
+  if (status === 'ok') return 'ok';
+  if (status === 'fail') return 'err';
+  return 'warn';
+}
+
+function fmtDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 async function openCfg() {
@@ -1190,7 +1415,8 @@ function buildPaletteItems(query = '') {
     { label: 'Refresh Monitor', action: () => refreshMonitor() },
     { label: 'Start New Session', action: () => newSession() },
     { label: 'Save Current Session', action: () => saveSession() },
-    { label: 'Open Logs View', action: () => sv('logs', document.querySelectorAll('#tabs .tab')[5]) }
+    { label: 'Open Logs View', action: () => sv('logs', document.querySelectorAll('#tabs .tab')[5]) },
+    { label: 'Open Ops Control Plane', action: () => sv('ops', document.querySelectorAll('#tabs .tab')[6]) }
   ];
 
   const sessions = state.savedSessions.map((session) => ({

@@ -6,6 +6,7 @@
 
 import { Router } from 'express';
 import { spawn } from 'child_process';
+import { buildShellArgs, IS_WINDOWS, SHELL_ENV, SHELL_EXECUTABLE, SHELL_LABEL } from '../services/host-runtime.js';
 import { broadcast } from '../services/ws-manager.js';
 
 export const router = Router();
@@ -14,19 +15,11 @@ export const router = Router();
 const activeSessions = new Map(); // sessionId → { proc, command, startedAt }
 const history = [];
 
-const PS_ENV = {
-  ...process.env,
-  PATH: `D:\\npm-global;C:\\Program Files\\nodejs;${process.env.PATH}`
-};
-
 // ── Sync execution (used by agents) ──────────────────────
 export function runPSSync(command, timeoutMs = 30000) {
   return new Promise((resolve) => {
     const lines = [];
-    const proc = spawn('powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
-      { env: PS_ENV }
-    );
+    const proc = spawn(SHELL_EXECUTABLE, buildShellArgs(command), { env: SHELL_ENV });
 
     proc.stdout.on('data', d => {
       d.toString().split('\n').forEach(l => { if (l.trim()) lines.push(l); });
@@ -54,10 +47,7 @@ export function runPSSync(command, timeoutMs = 30000) {
 export function runPSStream(command, sessionId) {
   broadcast({ type: 'ps:start', sessionId, command });
 
-  const proc = spawn('powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
-    { env: PS_ENV }
-  );
+  const proc = spawn(SHELL_EXECUTABLE, buildShellArgs(command), { env: SHELL_ENV });
 
   activeSessions.set(sessionId, { proc, command, startedAt: new Date().toISOString() });
   history.unshift({ sessionId, command, ts: new Date().toISOString() });
@@ -99,11 +89,11 @@ router.post('/exec', async (req, res) => {
 
   if (sync) {
     const output = await runPSSync(command);
-    return res.json({ sessionId, output, ts: new Date().toISOString() });
+    return res.json({ sessionId, output, ts: new Date().toISOString(), shell: SHELL_LABEL });
   }
 
   runPSStream(command, sessionId);
-  res.json({ sessionId, status: 'streaming', message: 'Lines streaming via WebSocket /ws' });
+  res.json({ sessionId, status: 'streaming', shell: SHELL_LABEL, message: `Lines streaming via WebSocket /ws (${SHELL_LABEL})` });
 });
 
 router.get('/running', (req, res) => {
@@ -140,3 +130,4 @@ router.get('/history', (req, res) => {
 });
 
 export default router;
+export { IS_WINDOWS, SHELL_EXECUTABLE, SHELL_LABEL };

@@ -12,19 +12,32 @@
 import { Router } from 'express';
 import { readFile, stat, open } from 'fs/promises';
 import { join } from 'path';
+import { tmpdir } from 'os';
+
+import { IS_WINDOWS } from '../services/host-runtime.js';
 
 const router = Router();
 
-const KNOWN_LOGS = [
-  { name: 'Execution Relay', path: 'D:\\tools\\claude-remote.log' },
-  { name: 'Relay Out',  path: `${process.env.TEMP || 'C:\\Windows\\Temp'}\\relay_out.log` },
-  { name: 'Relay Err',  path: `${process.env.TEMP || 'C:\\Windows\\Temp'}\\relay_err.log` },
-  { name: 'Claw Bridge',path: `${process.env.TEMP || 'C:\\Windows\\Temp'}\\claw_out.log` },
-  { name: 'Claw Err',   path: `${process.env.TEMP || 'C:\\Windows\\Temp'}\\claw_err.log` },
-  { name: 'Aggregator', path: `${process.env.TEMP || 'C:\\Windows\\Temp'}\\agg_out.log` },
-  { name: 'Proxy',      path: `${process.env.TEMP || 'C:\\Windows\\Temp'}\\proxy_out.log` },
-  { name: 'ngrok',      path: `${process.env.TEMP || 'C:\\Windows\\Temp'}\\ngrok_out.log` },
-];
+const TEMP_DIR = process.env.TEMP || tmpdir();
+const KNOWN_LOGS = IS_WINDOWS
+  ? [
+      { name: 'Execution Relay', path: 'D:\\tools\\claude-remote.log' },
+      { name: 'Relay Out', path: `${TEMP_DIR}\\relay_out.log` },
+      { name: 'Relay Err', path: `${TEMP_DIR}\\relay_err.log` },
+      { name: 'Claw Bridge', path: `${TEMP_DIR}\\claw_out.log` },
+      { name: 'Claw Err', path: `${TEMP_DIR}\\claw_err.log` },
+      { name: 'Aggregator', path: `${TEMP_DIR}\\agg_out.log` },
+      { name: 'Proxy', path: `${TEMP_DIR}\\proxy_out.log` },
+      { name: 'ngrok', path: `${TEMP_DIR}\\ngrok_out.log` }
+    ]
+  : [
+      { name: 'Executionor Runtime', path: join(TEMP_DIR, 'executionor.log') },
+      { name: 'Ops State', path: join(process.cwd(), 'sessions', 'ops-control.json') },
+      { name: 'Relay Out', path: join(TEMP_DIR, 'relay_out.log') },
+      { name: 'Relay Err', path: join(TEMP_DIR, 'relay_err.log') },
+      { name: 'Claw Bridge', path: join(TEMP_DIR, 'claw_out.log') },
+      { name: 'Claw Err', path: join(TEMP_DIR, 'claw_err.log') }
+    ];
 
 router.get('/files', async (req, res) => {
   const result = await Promise.all(KNOWN_LOGS.map(async f => {
@@ -39,7 +52,7 @@ router.get('/files', async (req, res) => {
 });
 
 router.get('/stream', async (req, res) => {
-  const logPath = req.query.path || 'D:\\tools\\claude-remote.log';
+  const logPath = req.query.path || KNOWN_LOGS[0]?.path;
   const tailLines = parseInt(req.query.tail || '80');
 
   res.setHeader('Content-Type',       'text/event-stream');

@@ -19,6 +19,8 @@ import sessionsRouter from './routes/sessions.js';
 import streamRouter   from './routes/stream.js';
 import logsRouter     from './routes/logs.js';
 import monitorRouter  from './routes/monitor.js';
+import opsRouter      from './routes/ops.js';
+import { IS_WINDOWS, SHELL_EXECUTABLE, SHELL_LABEL } from './services/host-runtime.js';
 import { attachWebSocket } from './services/ws-manager.js';
 import { WORKSPACE_ROOT } from './services/local-agent.js';
 
@@ -44,6 +46,7 @@ app.use('/api/sessions', sessionsRouter);
 app.use('/api/stream',   streamRouter);   // SSE token streaming
 app.use('/api/logs',     logsRouter);     // SSE log tail
 app.use('/api/monitor',  monitorRouter);  // process monitor
+app.use('/api/ops',      opsRouter);      // ops control plane
 
 // ── Health ────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
@@ -52,11 +55,18 @@ app.get('/api/health', (req, res) => {
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
     workspaceRoot: WORKSPACE_ROOT,
+    host: {
+      platform: process.platform,
+      shell: SHELL_LABEL,
+      shellExecutable: SHELL_EXECUTABLE,
+      windows: IS_WINDOWS
+    },
     env: {
       agents:   true,
       database: !!(process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY)),
       rawSQL:   !!(process.env.SUPABASE_DB_URL || process.env.DATABASE_URL),
       openclaw: !!process.env.OPENCLAW_RELAY_URL,
+      ops:      true,
     }
   });
 });
@@ -80,9 +90,10 @@ httpServer.listen(PORT, () => {
   ${ok(true, 'Agents (local free engine)')}
   ${ok(!!(process.env.SUPABASE_URL), 'Database (Supabase)')}
   ${ok(!!(process.env.SUPABASE_DB_URL||process.env.DATABASE_URL), 'Raw SQL (pg driver)')}
-  ${ok(true, 'PowerShell executor')}
+  ${ok(true, `${SHELL_LABEL} executor`)}
   ${ok(true, 'SSE streaming (stream + logs)')}
   ${ok(true, 'Process monitor')}
+  ${ok(true, 'Ops control plane')}
   ${ok(true, 'WebSocket real-time')}
 `);
 });
